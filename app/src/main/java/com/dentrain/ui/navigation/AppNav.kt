@@ -21,6 +21,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.EmojiEvents
 import androidx.compose.material.icons.filled.FitnessCenter
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material3.Icon
@@ -49,15 +50,18 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.dentrain.ui.admin.AdminScreen
 import com.dentrain.ui.auth.AuthScreen
 import com.dentrain.ui.components.GlassBackground
 import com.dentrain.ui.components.ScreenHeader
 import com.dentrain.ui.history.HistoryScreen
 import com.dentrain.ui.history.WorkoutDetailScreen
+import com.dentrain.ui.profile.ProfileScreen
 import com.dentrain.ui.records.RecordsScreen
 import com.dentrain.ui.settings.SettingsScreen
 import com.dentrain.ui.stopwatch.StopwatchScreen
 import com.dentrain.ui.theme.LocalGradient
+import com.dentrain.ui.trainer.TrainerScreen
 import com.dentrain.ui.workout.SessionScreen
 import com.dentrain.ui.workout.WorkoutEditorScreen
 import com.dentrain.ui.workout.WorkoutHomeScreen
@@ -65,10 +69,11 @@ import com.google.firebase.auth.FirebaseAuth
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 
-/** Четыре основные вкладки нижней панели. */
+/** Пять основных вкладок нижней панели. */
 enum class Tab(val label: String, val icon: ImageVector) {
     Workout("Тренировка", Icons.Filled.FitnessCenter),
     History("История", Icons.Filled.History),
+    Profile("Профиль", Icons.Filled.Person),
     Timer("Секундомер", Icons.Filled.Timer),
     Records("Рекорды", Icons.Filled.EmojiEvents)
 }
@@ -79,6 +84,8 @@ private const val ROUTE_EDITOR = "editor/{id}"
 private const val ROUTE_SESSION = "session/{id}"
 private const val ROUTE_DETAIL = "detail/{id}"
 private const val ROUTE_SETTINGS = "settings"
+private const val ROUTE_ADMIN = "admin"
+private const val ROUTE_TRAINER = "trainer"
 
 @Composable
 fun AppNav() {
@@ -87,9 +94,10 @@ fun AppNav() {
     val currentRoute = entry?.destination?.route
     val isMainTabs = currentRoute == ROUTE_MAIN || currentRoute == null
 
-    // Определяем стартовый экран: если пользователь авторизован, сразу на главную, иначе на экран входа
-    val startDest = if (FirebaseAuth.getInstance().currentUser != null) ROUTE_MAIN else ROUTE_AUTH
-
+    // Определяем стартовый экран: пользователь должен быть авторизован И его почта должна быть подтверждена
+    val currentUser = FirebaseAuth.getInstance().currentUser
+    val isVerifiedUser = currentUser != null
+    val startDest = if (isVerifiedUser) ROUTE_MAIN else ROUTE_AUTH
 
     val pagerState = rememberPagerState(pageCount = { Tab.entries.size })
     val scope = rememberCoroutineScope()
@@ -212,8 +220,21 @@ fun AppNav() {
                                     onOpenDetail = { nav.navigate("detail/$it") },
                                     onSettings = { nav.navigate(ROUTE_SETTINGS) }
                                 )
-                                2 -> StopwatchScreen(onSettings = { nav.navigate(ROUTE_SETTINGS) })
-                                3 -> RecordsScreen(onSettings = { nav.navigate(ROUTE_SETTINGS) })
+                                2 -> ProfileScreen(
+                                    onLogout = {
+                                        nav.navigate(ROUTE_AUTH) {
+                                            popUpTo(0) { inclusive = true }
+                                        }
+                                    },
+                                    onOpenAdmin = {
+                                        nav.navigate(ROUTE_ADMIN)
+                                    },
+                                    onOpenTrainer = {
+                                        nav.navigate(ROUTE_TRAINER)
+                                    }
+                                )
+                                3 -> StopwatchScreen(onSettings = { nav.navigate(ROUTE_SETTINGS) })
+                                4 -> RecordsScreen(onSettings = { nav.navigate(ROUTE_SETTINGS) })
                             }
                         }
                     }
@@ -243,6 +264,8 @@ fun AppNav() {
                 )
             }
             composable(ROUTE_SETTINGS) { SettingsScreen(onBack = { nav.popBackStack() }) }
+            composable(ROUTE_ADMIN) { AdminScreen(onBack = { nav.popBackStack() }) }
+            composable(ROUTE_TRAINER) { TrainerScreen(onBack = { nav.popBackStack() }) }
         }
     }
 }

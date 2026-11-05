@@ -32,6 +32,7 @@ import androidx.compose.material.icons.filled.FitnessCenter
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -58,7 +59,9 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
+import com.dentrain.data.ExerciseDraft
 import com.dentrain.data.SettingsEntity
+import com.dentrain.data.WorkoutDraft
 import com.dentrain.data.WorkoutRepository
 import com.dentrain.data.WorkoutStatus
 import com.dentrain.data.WorkoutWithExercises
@@ -73,11 +76,15 @@ import com.dentrain.ui.theme.DenTrainTheme
 import com.dentrain.util.Fmt
 import com.dentrain.util.Haptic
 import com.dentrain.util.doneSets
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
 import java.time.LocalDate
 
 private data class WeeklyStatsData(
@@ -99,6 +106,62 @@ class WorkoutHomeViewModel(private val repo: WorkoutRepository) : ViewModel() {
         repo.allWorkouts.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     val settings: StateFlow<SettingsEntity> =
         repo.settings.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), SettingsEntity())
+
+    init {
+        syncAssignedWorkouts()
+    }
+
+    private fun syncAssignedWorkouts() {
+        val uid = FirebaseAuth.getInstance().uid ?: return
+        viewModelScope.launch {
+            try {
+                val snapshot = FirebaseFirestore.getInstance()
+                    .collection("assigned_workouts")
+                    .whereEqualTo("athleteUid", uid)
+                    .get().await()
+
+                if (snapshot.isEmpty) return@launch
+
+                val existingList = repo.allWorkouts.first()
+
+                for (doc in snapshot.documents) {
+                    val title = doc.getString("title") ?: continue
+                    val trainerName = doc.getString("trainerName") ?: "Тренер"
+                    val dateEpochDay = doc.getLong("dateEpochDay") ?: LocalDate.now().toEpochDay()
+                    val description = doc.getString("description") ?: ""
+                    @Suppress("UNCHECKED_CAST")
+                    val exListRaw = doc.get("exercises") as? List<Map<String, Any>> ?: emptyList()
+
+                    val alreadyExists = existingList.any {
+                        it.workout.title == title && it.workout.dateEpochDay == dateEpochDay
+                    }
+
+                    if (!alreadyExists) {
+                        val dayOfWeek = try { LocalDate.ofEpochDay(dateEpochDay).dayOfWeek.value } catch (e: Exception) { 1 }
+                        val drafts = exListRaw.map { map ->
+                            ExerciseDraft(
+                                id = 0L,
+                                name = map["name"] as? String ?: "Упражнение",
+                                sets = (map["plannedSets"] as? Long)?.toInt() ?: 3,
+                                reps = map["plannedReps"] as? String ?: "10",
+                                weight = (map["plannedWeight"] as? Double) ?: (map["plannedWeight"] as? Long)?.toDouble()
+                            )
+                        }
+                        repo.saveWorkout(
+                            WorkoutDraft(
+                                id = 0L,
+                                title = title,
+                                epochDay = dateEpochDay,
+                                dayOfWeek = dayOfWeek,
+                                description = "Назначено тренером: $trainerName. $description".trim(),
+                                exercises = drafts
+                            )
+                        )
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+    }
 
     fun start(id: Long, onStarted: () -> Unit) {
         viewModelScope.launch { repo.startWorkout(id); onStarted() }
@@ -337,6 +400,31 @@ private fun PlannedWorkoutCard(
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                    }
+                }
+
+                if (workout.workout.description.startsWith("Назначено тренером:")) {
+                    Spacer(Modifier.height(4.dp))
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.5f))
+                            .padding(horizontal = 6.dp, vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Star,
+                            contentDescription = "От тренера",
+                            tint = MaterialTheme.colorScheme.tertiary,
+                            modifier = Modifier.size(12.dp)
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            "Назначено тренером",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.tertiary
                         )
                     }
                 }
