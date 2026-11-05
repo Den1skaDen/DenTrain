@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "800963952423",
+    "project_id": "dentrain-9af07",
+    "storage_bucket": "dentrain-9af07.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:800963952423:android:c60c926997ff8f64bdb302",
+        "android_client_info": {
+          "package_name": "com.dentrain"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyApJydABwI637ymh8B-VSKjHKa1vNwZDPQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
