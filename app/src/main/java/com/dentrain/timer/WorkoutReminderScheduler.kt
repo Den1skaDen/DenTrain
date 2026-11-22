@@ -35,7 +35,7 @@ object WorkoutReminderScheduler {
 
     fun sync(context: Context) {
         CoroutineScope(Dispatchers.IO).launch {
-            val db = AppDatabase.create(context)
+            val db = (context.applicationContext as com.dentrain.DenTrainApp).container.database
             val settings = db.settingsDao().getOnce()
             if (settings == null || !settings.reminderEnabled) {
                 cancel(context)

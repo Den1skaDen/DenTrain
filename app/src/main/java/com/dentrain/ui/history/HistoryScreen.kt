@@ -1,5 +1,10 @@
 package com.dentrain.ui.history
 
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import com.dentrain.ui.components.launchUserAction
+import com.dentrain.ui.components.OperationErrorDialog
+import com.dentrain.ui.theme.DenTrainPalette
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -7,11 +12,13 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
-import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -33,21 +40,21 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.outlined.Timer
@@ -62,60 +69,61 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import com.dentrain.data.WorkoutRepository
-import com.dentrain.data.WorkoutWithExercises
+import com.dentrain.data.WorkoutListEntry
+import com.dentrain.data.WorkoutScreenCache
 import com.dentrain.ui.components.EmptyState
 import com.dentrain.ui.components.WeekCalendarRow
-import com.dentrain.ui.components.appViewModel
+import com.dentrain.ui.components.WorkoutListCount
 import com.dentrain.ui.theme.LocalGradient
 import com.dentrain.ui.theme.DenTrainTheme
 import com.dentrain.util.Fmt
 import com.dentrain.util.Haptic
-import com.dentrain.util.doneSets
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.launch
 import java.time.LocalDate
-import java.time.format.DateTimeFormatter
-import java.util.Locale
 
-class HistoryViewModel(private val repo: WorkoutRepository) : ViewModel() {
-    private val all = repo.completed.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+class HistoryViewModel(private val repo: WorkoutRepository, cache: WorkoutScreenCache) : ViewModel() {
+    private val all = cache.history
     val day = MutableStateFlow<Int?>(LocalDate.now().dayOfWeek.value)
     val newestFirst = MutableStateFlow(true)
 
-    val dayCounts: StateFlow<Map<Int, Int>> = all.map { list -> list.groupingBy { it.workout.dayOfWeek }.eachCount() }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
+    val calendar = cache.calendar
 
-    val allCompletedDates: StateFlow<Set<LocalDate>> = all.map { list ->
-        list.map { LocalDate.ofEpochDay(it.workout.dateEpochDay) }.toSet()
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptySet())
-
-    val items: StateFlow<List<WorkoutWithExercises>> = combine(all, day, newestFirst) { list, d, newest ->
+    val items: StateFlow<List<WorkoutListEntry>> = combine(all, day, newestFirst) { list, d, newest ->
         val filtered = if (d == null) list else list.filter { it.workout.dayOfWeek == d }
-        if (newest) filtered.sortedWith(compareByDescending<WorkoutWithExercises> { it.workout.dateEpochDay }.thenByDescending { it.workout.id })
-        else filtered.sortedWith(compareBy<WorkoutWithExercises> { it.workout.dateEpochDay }.thenBy { it.workout.id })
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        if (newest) filtered else filtered.asReversed()
+    }.flowOn(Dispatchers.Default).stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     val pinnedIds: StateFlow<Set<Long>> = repo.pinnedIds.map { it.toSet() }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptySet())
+        .flowOn(Dispatchers.Default).stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
+
+    var operationError by mutableStateOf<String?>(null)
+
+    private fun perform(fallback: String, action: suspend () -> Unit) {
+        launchUserAction(fallback, { operationError = it }, action)
+    }
 
     fun selectDay(d: Int) { day.value = if (d == 0 || day.value == d) null else d }
     fun toggleSort() { newestFirst.value = !newestFirst.value }
-    fun togglePin(id: Long, targetPinned: Boolean) { viewModelScope.launch { repo.setPinned(id, targetPinned) } }
+    fun togglePin(id: Long, targetPinned: Boolean) { perform("Не удалось обновить закрепление тренировки.") { repo.setPinned(id, targetPinned) } }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun HistoryScreen(onOpenDetail: (Long) -> Unit, onSettings: () -> Unit) {
-    val vm = appViewModel { HistoryViewModel(it.repository) }
+fun HistoryScreen(vm: HistoryViewModel, onOpenDetail: (Long) -> Unit, onSettings: () -> Unit) {
+    OperationErrorDialog(vm.operationError) { vm.operationError = null }
     val items by vm.items.collectAsStateWithLifecycle()
     val day by vm.day.collectAsStateWithLifecycle()
     val newestFirst by vm.newestFirst.collectAsStateWithLifecycle()
     val pinned by vm.pinnedIds.collectAsStateWithLifecycle()
-    val completedDates by vm.allCompletedDates.collectAsStateWithLifecycle()
+    val calendar by vm.calendar.collectAsStateWithLifecycle()
+    val completedDates = calendar.completedDates
 
     val today = remember { LocalDate.now() }
     val selectedDate = remember(day) {
@@ -123,14 +131,14 @@ fun HistoryScreen(onOpenDetail: (Long) -> Unit, onSettings: () -> Unit) {
         else today.minusDays((today.dayOfWeek.value - day!!).toLong())
     }
 
-    val topPadding = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    val topPadding = WindowInsets.safeDrawing.asPaddingValues().calculateTopPadding()
 
     Box(Modifier.fillMaxSize()) {
         LazyColumn(
             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            item {
+            item(key = "title", contentType = "title") {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(top = topPadding + 8.dp, bottom = 4.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -141,28 +149,33 @@ fun HistoryScreen(onOpenDetail: (Long) -> Unit, onSettings: () -> Unit) {
             }
 
             // 7 дней недели в одну линию (как на фото 1)
-            item {
+            item(key = "calendar", contentType = "calendar") {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Row(
+                    FlowRow(
                         Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        Text("Расписание недели", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            "Расписание недели",
+                            modifier = Modifier.align(Alignment.CenterVertically).padding(end = 8.dp),
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.titleMedium
+                        )
                         val isAllDaysActive = day == null
                         OutlinedButton(
                             onClick = { vm.selectDay(0) },
                             shape = RoundedCornerShape(12.dp),
                             border = BorderStroke(
                                 if (isAllDaysActive) 1.5.dp else 1.dp,
-                                if (isAllDaysActive) Color(0xFFA6FF00) else Color(0xFF333644)
+                                if (isAllDaysActive) DenTrainPalette.Lime else DenTrainPalette.Border
                             ),
                             colors = ButtonDefaults.outlinedButtonColors(
-                                containerColor = if (isAllDaysActive) Color(0xFF242732) else Color(0xFF1B1D25),
-                                contentColor = if (isAllDaysActive) Color(0xFFA6FF00) else Color(0xFFA0A7B8)
+                                containerColor = if (isAllDaysActive) DenTrainPalette.RaisedPanel else DenTrainPalette.Panel,
+                                contentColor = if (isAllDaysActive) DenTrainPalette.Lime else DenTrainPalette.MutedText
                             ),
                             contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                            modifier = Modifier.height(32.dp)
+                            modifier = Modifier.align(Alignment.CenterVertically).heightIn(min = 32.dp)
                         ) {
                             Text(
                                 "Все дни",
@@ -181,14 +194,15 @@ fun HistoryScreen(onOpenDetail: (Long) -> Unit, onSettings: () -> Unit) {
                 }
             }
 
-            item {
-                Row(
+            item(key = "sort", contentType = "sort") {
+                FlowRow(
                     Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     Text(
                         if (day == null) "Все тренировки" else "Тренировки: ${Fmt.dayName(day!!)}",
+                        modifier = Modifier.align(Alignment.CenterVertically).padding(end = 8.dp),
                         fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium
                     )
                     OutlinedButton(
@@ -196,11 +210,11 @@ fun HistoryScreen(onOpenDetail: (Long) -> Unit, onSettings: () -> Unit) {
                         shape = RoundedCornerShape(12.dp),
                         border = BorderStroke(1.dp, Color.White),
                         colors = ButtonDefaults.outlinedButtonColors(
-                            containerColor = Color(0xFF1B1D25),
+                            containerColor = DenTrainPalette.Panel,
                             contentColor = Color.White
                         ),
                         contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
-                        modifier = Modifier.height(32.dp).width(148.dp)
+                        modifier = Modifier.align(Alignment.CenterVertically).heightIn(min = 32.dp).width(148.dp)
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
@@ -209,18 +223,10 @@ fun HistoryScreen(onOpenDetail: (Long) -> Unit, onSettings: () -> Unit) {
                             Icon(Icons.Filled.SwapVert, contentDescription = null, tint = Color.White, modifier = Modifier.size(15.dp))
                             Spacer(Modifier.width(4.dp))
                             Text(
-                                "Сначала ",
+                                if (newestFirst) "Сначала новые" else "Сначала старые",
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Medium,
-                                color = Color.White,
-                                maxLines = 1
-                            )
-                            Text(
-                                if (newestFirst) "новые" else "старые",
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Medium,
-                                color = Color.White,
-                                maxLines = 1
+                                color = Color.White
                             )
                         }
                     }
@@ -228,7 +234,7 @@ fun HistoryScreen(onOpenDetail: (Long) -> Unit, onSettings: () -> Unit) {
             }
 
             if (items.isEmpty()) {
-                item {
+                item(key = "empty", contentType = "empty") {
                     EmptyState(
                         Icons.Filled.History,
                         if (day == null) "История пуста" else "В этот день тренировок нет",
@@ -236,7 +242,7 @@ fun HistoryScreen(onOpenDetail: (Long) -> Unit, onSettings: () -> Unit) {
                     )
                 }
             } else {
-                items(items, key = { it.workout.id }) { w ->
+                items(items, key = { it.workout.id }, contentType = { "workout" }) { w ->
                     val isPinned = w.workout.id in pinned
 
                     HistoryWorkoutCard(
@@ -254,53 +260,38 @@ fun HistoryScreen(onOpenDetail: (Long) -> Unit, onSettings: () -> Unit) {
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun HistoryWorkoutCard(
-    workout: WorkoutWithExercises,
+    workout: WorkoutListEntry,
     isPinned: Boolean,
     onClick: () -> Unit,
     onTogglePin: (Boolean) -> Unit
 ) {
     val w = workout.workout
-    val cardBg = Color(0xFF1B1D25)
-    val borderColor = Color(0xFF282B36)
-    val labelColor = Color(0xFFA0A7B8)
-    val accentColor = Color(0xFFA6FF00) // салатовый акцент
-    val datePillBg = Color(0xFF242732)
-    val datePillBorder = Color(0xFF333644)
+    val labelColor = DenTrainPalette.MutedText
+    val accentColor = DenTrainPalette.Lime // салатовый акцент
+    val datePillBg = DenTrainPalette.RaisedPanel
+    val datePillBorder = DenTrainPalette.Border
 
     val dayName = remember(w.dayOfWeek) { Fmt.dayName(w.dayOfWeek) }
-    val dateText = remember(w.dateEpochDay) {
-        val formatter = DateTimeFormatter.ofPattern("d MMMM yyyy", Locale("ru"))
-        LocalDate.ofEpochDay(w.dateEpochDay).format(formatter)
-    }
+    val dateText = remember(w.dateEpochDay) { Fmt.displayDate(w.dateEpochDay) }
 
-    val exercisesCount = workout.exercises.size
-    val setsCount = workout.doneSets()
-    val durationText = Fmt.durationText(w.startedAt, w.completedAt)
+    val exercisesCount = workout.exercisesCount
+    val setsCount = workout.setsCount
+    val durationText = remember(w.startedAt, w.completedAt) { Fmt.durationText(w.startedAt, w.completedAt) }
 
     val gold = Color(0xFFFFB300)
-    val weakGold = gold.copy(alpha = 0.3f)
-    val baseBorder = if (isPinned) BorderStroke(1.dp, weakGold) else BorderStroke(1.dp, borderColor)
-
-    var cardModifier = Modifier
+    val shape = RoundedCornerShape(16.dp)
+    val borderColor = if (isPinned) gold.copy(alpha = 0.3f) else DenTrainPalette.SubtleBorder
+    val pinnedBorder = if (isPinned) {
+        Modifier.border(2.dp, remember {
+            Brush.linearGradient(0f to gold, 0.3f to Color.Transparent, 0.7f to Color.Transparent, 1f to gold)
+        }, shape)
+    } else Modifier
+    val cardModifier = Modifier
         .fillMaxWidth()
-        .clip(RoundedCornerShape(16.dp))
-        .background(cardBg)
-        .border(baseBorder, RoundedCornerShape(16.dp))
-
-    if (isPinned) {
-        cardModifier = cardModifier.border(
-            width = 2.dp,
-            brush = Brush.linearGradient(
-                0.0f to gold,
-                0.3f to Color.Transparent,
-                0.7f to Color.Transparent,
-                1.0f to gold
-            ),
-            shape = RoundedCornerShape(16.dp)
-        )
-    }
-
-    cardModifier = cardModifier
+        .clip(shape)
+        .background(DenTrainPalette.Panel)
+        .border(1.dp, borderColor, shape)
+        .then(pinnedBorder)
         .clickable { onClick() }
         .padding(horizontal = 16.dp, vertical = 12.dp)
 
@@ -364,22 +355,7 @@ private fun HistoryWorkoutCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 // Упражнений
-                Row(verticalAlignment = Alignment.Bottom) {
-                    Text(
-                        text = exercisesCount.toString(),
-                        fontSize = 20.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                        color = Color.White
-                    )
-                    Spacer(Modifier.width(4.dp))
-                    Text(
-                        text = Fmt.plural(exercisesCount, "упражнение", "упражнения", "упражнений"),
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = labelColor,
-                        modifier = Modifier.padding(bottom = 2.dp)
-                    )
-                }
+                WorkoutListCount(exercisesCount, Fmt.plural(exercisesCount, "упражнение", "упражнения", "упражнений"), labelColor)
 
                 // Разделитель
                 Box(
@@ -391,22 +367,7 @@ private fun HistoryWorkoutCard(
                 )
 
                 // Подходов
-                Row(verticalAlignment = Alignment.Bottom) {
-                    Text(
-                        text = setsCount.toString(),
-                        fontSize = 20.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                        color = Color.White
-                    )
-                    Spacer(Modifier.width(4.dp))
-                    Text(
-                        text = Fmt.plural(setsCount, "подход", "подхода", "подходов"),
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = labelColor,
-                        modifier = Modifier.padding(bottom = 2.dp)
-                    )
-                }
+                WorkoutListCount(setsCount, Fmt.plural(setsCount, "подход", "подхода", "подходов"), labelColor)
 
                 Spacer(Modifier.weight(1f))
 
@@ -414,8 +375,7 @@ private fun HistoryWorkoutCard(
                 if (durationText != null) {
                     Box(
                         modifier = Modifier
-                            .clip(CircleShape)
-                            .background(datePillBg)
+                            .background(datePillBg, CircleShape)
                             .border(BorderStroke(1.dp, datePillBorder), CircleShape)
                             .padding(horizontal = 8.dp, vertical = 3.dp)
                     ) {
@@ -446,8 +406,8 @@ private fun HistoryWorkoutCard(
 @Composable
 private fun DayCard(label: String, count: Int, selected: Boolean, onClick: () -> Unit) {
     val shape = RoundedCornerShape(16.dp)
-    val cardBg = Color(0xFF1B1D25)
-    val borderColor = Color(0xFF282B36)
+    val cardBg = DenTrainPalette.Panel
+    val borderColor = DenTrainPalette.SubtleBorder
     val bg = if (selected) LocalGradient.current.brush else SolidColor(cardBg)
     val fg = if (selected) Color.White else MaterialTheme.colorScheme.onSurface
     Column(

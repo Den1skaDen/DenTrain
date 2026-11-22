@@ -1,7 +1,13 @@
 package com.dentrain.ui.workout
 
-import android.graphics.BitmapFactory
-import android.util.Base64
+import com.dentrain.util.userMessage
+import com.dentrain.ui.components.launchUserAction
+import com.dentrain.ui.components.OperationErrorDialog
+import com.dentrain.ui.theme.DenTrainPalette
+import com.airbnb.lottie.compose.LottieAnimation
+import com.airbnb.lottie.compose.LottieCompositionSpec
+import com.airbnb.lottie.compose.rememberLottieComposition
+import com.dentrain.R
 import androidx.compose.foundation.Image
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -11,7 +17,10 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -22,8 +31,13 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -63,8 +77,6 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.graphics.graphicsLayer
 import kotlinx.coroutines.launch
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.FilterChip
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
@@ -75,11 +87,11 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -102,9 +114,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -112,11 +127,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import coil.compose.AsyncImage
-import com.dentrain.data.ExerciseDraft
-import com.dentrain.data.SettingsEntity
-import com.dentrain.data.WorkoutDraft
 import com.dentrain.data.WorkoutRepository
 import com.dentrain.data.WorkoutStatus
+import com.dentrain.data.WorkoutListEntry
 import com.dentrain.data.WorkoutWithExercises
 import com.dentrain.timer.RestTimer
 import com.dentrain.timer.TimerState
@@ -132,7 +145,7 @@ import com.dentrain.ui.components.appViewModel
 import com.dentrain.ui.theme.DenTrainTheme
 import com.dentrain.util.Fmt
 import com.dentrain.util.Haptic
-import com.dentrain.util.doneSets
+import com.dentrain.ui.components.WorkoutListCount
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -143,6 +156,19 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import com.dentrain.ui.components.rememberAvatarBitmap
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.callbackFlow
+import com.dentrain.data.WorkoutDelivery
+import com.dentrain.data.activeTrainerRequest
+import com.google.firebase.firestore.DocumentSnapshot
+import com.google.firebase.firestore.Query
+import com.google.firebase.firestore.MetadataChanges
+import java.time.Instant
+import java.time.ZoneId
+import androidx.compose.material3.TextButton
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -161,30 +187,26 @@ data class NotificationModel(
     val message: String = "",
     val timestamp: Long = 0L,
     val isRead: Boolean = false,
-    val type: String = "info"
+    val type: String = "info",
+    val opensTrainerRequests: Boolean = false
 )
 
 class WorkoutHomeViewModel(
     private val repo: WorkoutRepository,
     restTimer: RestTimer
 ) : ViewModel() {
-    val restState: StateFlow<TimerState> = restTimer.state
-    val planned: StateFlow<List<WorkoutWithExercises>> =
-        repo.planned.map { list -> list.sortedBy { it.workout.dateEpochDay } }
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-    val active: StateFlow<WorkoutWithExercises?> =
-        repo.inProgress.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
-    val pinned: StateFlow<List<WorkoutWithExercises>> =
-        repo.pinned.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-    val allWorkouts: StateFlow<List<WorkoutWithExercises>> =
-        repo.allWorkouts.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-    val settings: StateFlow<SettingsEntity> =
-        repo.settings.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), SettingsEntity())
-
+    val restState: StateFlow<TimerState> = restTimer.state.map { state ->
+        state.copy(remainingMs = ((state.remainingMs + 999) / 1_000) * 1_000)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), restTimer.state.value)
+    var lastShownRestRunId: Long? = null
     private val _notifications = MutableStateFlow<List<NotificationModel>>(emptyList())
     val notifications: StateFlow<List<NotificationModel>> = _notifications
     val unreadNotificationsCount: StateFlow<Int> = _notifications.map { list -> list.count { !it.isRead } }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
+
+    private val _notificationError = MutableStateFlow<String?>(null)
+    val notificationError: StateFlow<String?> = _notificationError
+    private var notificationListener: com.google.firebase.firestore.ListenerRegistration? = null
 
     init {
         syncAssignedWorkouts()
@@ -193,114 +215,113 @@ class WorkoutHomeViewModel(
 
     private fun listenToNotifications() {
         val uid = FirebaseAuth.getInstance().uid ?: return
-        FirebaseFirestore.getInstance().collection("notifications")
+        notificationListener = FirebaseFirestore.getInstance().collection("notifications")
             .whereEqualTo("recipientUid", uid)
-            .addSnapshotListener { snap, _ ->
-                if (snap != null) {
-                    val list = snap.documents.mapNotNull { doc ->
-                        NotificationModel(
-                            id = doc.id,
-                            title = doc.getString("title") ?: "",
-                            message = doc.getString("message") ?: "",
-                            timestamp = doc.getLong("timestamp") ?: 0L,
-                            isRead = doc.getBoolean("isRead") ?: false,
-                            type = doc.getString("type") ?: "info"
-                        )
-                    }.sortedByDescending { it.timestamp }
-                    _notifications.value = list
+            .orderBy("timestamp", Query.Direction.DESCENDING)
+            .limit(100)
+            .addSnapshotListener { snapshot, failure ->
+                if (failure != null) _notificationError.value = failure.userMessage("Не удалось загрузить уведомления.")
+                if (snapshot != null) {
+                    _notificationError.value = null
+                    _notifications.value = snapshot.documents.filterNot {
+                        it.getTimestamp("expiresAt")?.toDate()?.time?.let { expiry -> expiry <= System.currentTimeMillis() } == true ||
+                            (it.contains("event") && it.getTimestamp("occurredAt") == null)
+                    }
+                        .map { it.toNotification() }.sortedByDescending { it.timestamp }
                 }
             }
     }
 
-    fun markNotificationsAsRead() {
-        val uid = FirebaseAuth.getInstance().uid ?: return
-        val unread = _notifications.value.filter { !it.isRead }
+    private fun DocumentSnapshot.toNotification(): NotificationModel {
+        val subject = getString("subject").orEmpty()
+        val event = getString("event")
+        val (title, message) = when (event) {
+            "request_received" -> "Новая заявка" to "Заявка на тренировки от спортсмена $subject."
+            "request_sent" -> "Заявка отправлена" to "Ваша заявка тренеру $subject отправлена."
+            "accepted" -> "Заявка принята" to "$subject теперь ваш тренер."
+            "rejected" -> "Заявка отклонена" to "$subject отклонил вашу заявку."
+            "assigned" -> "Новая тренировка" to "«$subject» появится в плане тренировок."
+            "received" -> "Тренировка получена" to "«$subject» сохранена в дневнике ученика."
+            else -> getString("title").orEmpty() to getString("message").orEmpty()
+        }
+        val type = when (event) {
+            "received", "accepted", "request_sent" -> "success"
+            "rejected" -> "warning"
+            else -> getString("type") ?: "info"
+        }
+        return NotificationModel(
+            id, title, message,
+            getTimestamp("occurredAt")?.toDate()?.time ?: getLong("timestamp") ?: 0L,
+            getBoolean("isRead") ?: false, type,
+            opensTrainerRequests = event == "request_received"
+        )
+    }
+
+    fun markNotificationsAsRead(id: String? = null) {
+        val unread = _notifications.value.filter { !it.isRead && (id == null || it.id == id) }
         if (unread.isEmpty()) return
-        
         viewModelScope.launch {
             val db = FirebaseFirestore.getInstance()
             try {
-                // Batch write to mark as read (up to 500 limits, usually fine)
                 val batch = db.batch()
-                unread.forEach {
-                    val ref = db.collection("notifications").document(it.id)
-                    batch.update(ref, "isRead", true)
-                }
+                unread.forEach { batch.update(db.collection("notifications").document(it.id), "isRead", true) }
                 batch.commit().await()
-            } catch (e: Exception) {
-                // Ignore for now
+            } catch (e: CancellationException) {
+                throw e
+            } catch (failure: Exception) {
+                _notificationError.value = failure.userMessage("Не удалось отметить уведомления прочитанными.")
             }
         }
     }
 
     private fun syncAssignedWorkouts() {
         val uid = FirebaseAuth.getInstance().uid ?: return
-        viewModelScope.launch {
-            try {
-                // Облачная синхронизация данных пользователя (выполненные тренировки и рекорды)
-                repo.syncUserDataFromCloud()
-
-                val snapshot = FirebaseFirestore.getInstance()
-                    .collection("assigned_workouts")
+        val db = FirebaseFirestore.getInstance()
+        viewModelScope.launch(Dispatchers.IO) {
+            callbackFlow {
+                val listener = db.collection("assigned_workouts")
                     .whereEqualTo("athleteUid", uid)
-                    .get().await()
-
-                if (snapshot.isEmpty) return@launch
-
-                val existingList = repo.allWorkouts.first()
-
-                for (doc in snapshot.documents) {
-                    val title = doc.getString("title") ?: continue
-                    val trainerName = doc.getString("trainerName") ?: "Тренер"
-                    val dateEpochDay = doc.getLong("dateEpochDay") ?: LocalDate.now().toEpochDay()
-                    val description = doc.getString("description") ?: ""
-                    @Suppress("UNCHECKED_CAST")
-                    val exListRaw = doc.get("exercises") as? List<Map<String, Any>> ?: emptyList()
-
-                    val alreadyExists = existingList.any {
-                        it.workout.title == title && it.workout.dateEpochDay == dateEpochDay
+                    .addSnapshotListener(MetadataChanges.INCLUDE) { snapshot, failure ->
+                        if (failure == null && snapshot != null) trySend(snapshot)
                     }
-
-                    if (!alreadyExists) {
-                        val dayOfWeek = try { LocalDate.ofEpochDay(dateEpochDay).dayOfWeek.value } catch (e: Exception) { 1 }
-                        val drafts = exListRaw.map { map ->
-                            ExerciseDraft(
-                                id = 0L,
-                                name = map["name"] as? String ?: "Упражнение",
-                                sets = (map["plannedSets"] as? Long)?.toInt() ?: 3,
-                                reps = map["plannedReps"] as? String ?: "10",
-                                weight = (map["plannedWeight"] as? Double) ?: (map["plannedWeight"] as? Long)?.toDouble()
-                            )
-                        }
-                        repo.saveWorkout(
-                            WorkoutDraft(
-                                id = 0L,
-                                title = title,
-                                epochDay = dateEpochDay,
-                                dayOfWeek = dayOfWeek,
-                                description = "Назначено тренером: $trainerName. $description".trim(),
-                                exercises = drafts
-                            )
-                        )
+                awaitClose { listener.remove() }
+            }.collect { snapshot ->
+                for (doc in snapshot.documents) {
+                    try {
+                        WorkoutDelivery.importAssignment(db, uid, repo, doc)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        android.util.Log.w("WorkoutDelivery", "Could not import or confirm assignment", e)
                     }
                 }
-            } catch (_: Exception) {}
+            }
         }
     }
 
-    fun start(id: Long, onStarted: () -> Unit) {
-        viewModelScope.launch { repo.startWorkout(id); onStarted() }
+    override fun onCleared() {
+        notificationListener?.remove()
     }
-    fun delete(id: Long) { viewModelScope.launch { repo.deleteWorkout(id) } }
-    fun unpin(id: Long) { viewModelScope.launch { repo.setPinned(id, false) } }
+
+    var operationError by mutableStateOf<String?>(null)
+
+    private fun perform(fallback: String, action: suspend () -> Unit) {
+        launchUserAction(fallback, { operationError = it }, action)
+    }
+
+    fun start(id: Long, onStarted: () -> Unit) {
+        perform("Не удалось начать тренировку.") { repo.startWorkout(id); onStarted() }
+    }
+    fun delete(id: Long) { perform("Не удалось удалить тренировку.") { repo.deleteWorkout(id) } }
+    fun unpin(id: Long) { perform("Не удалось открепить тренировку.") { repo.setPinned(id, false) } }
 
     fun updateScheduledDays(days: Set<Int>) {
         val str = days.sorted().joinToString(",")
-        viewModelScope.launch { repo.updateSettings { it.copy(scheduledDays = str) } }
+        perform("Не удалось сохранить расписание.") { repo.updateSettings { it.copy(scheduledDays = str) } }
     }
 
     fun updateHomeBlocksOrder(order: String) {
-        viewModelScope.launch { repo.updateSettings { it.copy(homeBlocksOrder = order) } }
+        perform("Не удалось сохранить порядок блоков.") { repo.updateSettings { it.copy(homeBlocksOrder = order) } }
     }
 }
 
@@ -312,29 +333,38 @@ fun WorkoutHomeScreen(
     onOpenSession: (Long) -> Unit,
     onOpenDetail: (Long) -> Unit,
     onSettings: () -> Unit,
-    onOpenTimer: () -> Unit
+    onOpenTimer: () -> Unit,
+    onOpenTrainerRequests: () -> Unit
 ) {
     val vm = appViewModel { WorkoutHomeViewModel(it.repository, it.restTimer) }
-    val restState by vm.restState.collectAsStateWithLifecycle()
-    val planned by vm.planned.collectAsStateWithLifecycle()
-    val active by vm.active.collectAsStateWithLifecycle()
-    val pinned by vm.pinned.collectAsStateWithLifecycle()
-    val allWorkouts by vm.allWorkouts.collectAsStateWithLifecycle()
+    OperationErrorDialog(vm.operationError) { vm.operationError = null }
+    val account = (LocalContext.current.applicationContext as com.dentrain.DenTrainApp).container
+    val sync = account.sync
+    val syncStatus = sync?.status?.collectAsStateWithLifecycle()?.value.orEmpty()
+    val planned by account.screenCache.planned.collectAsStateWithLifecycle()
+    val active by account.screenCache.active.collectAsStateWithLifecycle()
+    val pinned by account.screenCache.pinned.collectAsStateWithLifecycle()
+    val calendar by account.screenCache.calendar.collectAsStateWithLifecycle()
 
     // Читаем профиль пользователя из Firestore напрямую (или через отдельный ViewModel, но здесь проще так для аватара и имени)
     val uid = FirebaseAuth.getInstance().uid
-    var userName by remember { mutableStateOf("Athlete") }
-    var userAvatarUrl by remember { mutableStateOf<String?>(null) }
+    var userName by remember(uid) { mutableStateOf("Athlete") }
+    var userAvatarUrl by remember(uid) { mutableStateOf<String?>(null) }
+    var canReceiveRequests by remember(uid) { mutableStateOf(false) }
+    var pendingRequests by remember(uid, canReceiveRequests) { mutableStateOf(0) }
 
     DisposableEffect(uid) {
         if (uid != null) {
-            val listener = FirebaseFirestore.getInstance().collection("users").document(uid)
+            val listener = FirebaseFirestore.getInstance().collection("profiles").document(uid)
                 .addSnapshotListener { snapshot, e ->
                     if (e != null) return@addSnapshotListener
                     if (snapshot != null && snapshot.exists()) {
                         val nickname = snapshot.getString("nickname")
                         if (!nickname.isNullOrBlank()) userName = nickname
                         userAvatarUrl = snapshot.getString("avatarUrl") ?: snapshot.getString("avatarBase64")
+                    }
+                    if (snapshot != null) {
+                        canReceiveRequests = snapshot.getString("role") in setOf("trainer", "admin")
                     }
                 }
             onDispose { listener.remove() }
@@ -343,39 +373,32 @@ fun WorkoutHomeScreen(
         }
     }
 
-    val decodedAvatar = remember(userAvatarUrl) {
-        if (!userAvatarUrl.isNullOrBlank() && !userAvatarUrl!!.startsWith("http")) {
-            try {
-                val imageBytes = Base64.decode(userAvatarUrl, Base64.DEFAULT)
-                BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
-            } catch (e: Exception) { null }
+    DisposableEffect(uid, canReceiveRequests) {
+        val requests = if (uid != null && canReceiveRequests) {
+            FirebaseFirestore.getInstance().collection("trainer_requests")
+                .whereEqualTo("trainerUid", uid).whereEqualTo("status", "pending")
+                .addSnapshotListener { snapshot, _ ->
+                    if (snapshot != null) pendingRequests = snapshot.documents.count { it.activeTrainerRequest() != null }
+                }
         } else null
+        onDispose { requests?.remove() }
     }
+
+    val avatarSource = userAvatarUrl
+    val decodedAvatar = rememberAvatarBitmap(avatarSource)
 
     var deleteId by remember { mutableStateOf<Long?>(null) }
 
     val today = remember { LocalDate.now() }
     var selectedDate by remember { mutableStateOf(today) }
 
-    val workoutsByDate = remember(allWorkouts) {
-        allWorkouts.groupBy { it.workout.dateEpochDay }
-    }
-    val workoutDates = remember(allWorkouts) {
-        allWorkouts.map { LocalDate.ofEpochDay(it.workout.dateEpochDay) }.toSet()
-    }
-    val completedDates = remember(allWorkouts) {
-        allWorkouts.filter { it.workout.status == WorkoutStatus.COMPLETED }
-            .map { LocalDate.ofEpochDay(it.workout.dateEpochDay) }.toSet()
-    }
-    val plannedDates = remember(allWorkouts) {
-        allWorkouts.filter { it.workout.status == WorkoutStatus.PLANNED || it.workout.status == WorkoutStatus.IN_PROGRESS }
-            .map { LocalDate.ofEpochDay(it.workout.dateEpochDay) }.toSet()
-    }
+    val (workoutsByDate, completedDates, plannedDates) = calendar
 
-    val settings by vm.settings.collectAsStateWithLifecycle()
+    val settings by account.screenCache.settings.collectAsStateWithLifecycle()
     var isEditMode by remember { mutableStateOf(false) }
 
     val notifications by vm.notifications.collectAsStateWithLifecycle()
+    val notificationError by vm.notificationError.collectAsStateWithLifecycle()
     val unreadNotificationsCount by vm.unreadNotificationsCount.collectAsStateWithLifecycle()
     var showNotificationsSheet by remember { mutableStateOf(false) }
 
@@ -392,7 +415,8 @@ fun WorkoutHomeScreen(
     }
 
     Box(
-        Modifier.fillMaxSize().statusBarsPadding()
+        Modifier.fillMaxSize()
+            .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top))
             .pointerInput(Unit) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
@@ -414,19 +438,27 @@ fun WorkoutHomeScreen(
                         }
                     }
                 }
-            }
+            },
+        contentAlignment = Alignment.TopCenter
     ) {
-        val blocksList = settings.homeBlocksOrder.split(",").filter { it.isNotBlank() }.takeIf { it.isNotEmpty() } ?: listOf("MAIN", "CALENDAR", "PLANNED", "PINNED")
+        val blocksList = remember(settings.homeBlocksOrder) {
+            settings.homeBlocksOrder.split(",").filter { it.isNotBlank() }.distinct()
+                .ifEmpty { listOf("MAIN", "CALENDAR", "PLANNED", "PINNED") }
+        }
 
         LazyColumn(
+            modifier = Modifier.widthIn(max = 720.dp).fillMaxWidth(),
             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            if (syncStatus.isNotEmpty()) item(key = "sync", contentType = "sync") {
+                Text(syncStatus, color = MaterialTheme.colorScheme.error)
+            }
             blocksList.forEach { block ->
                 when (block) {
                     "MAIN" -> {
                         // Header
-                        item {
+                        item(key = "header", contentType = "header") {
                             Row(
                                 modifier = Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 8.dp),
                                 verticalAlignment = Alignment.CenterVertically
@@ -456,7 +488,19 @@ fun WorkoutHomeScreen(
                                 Spacer(Modifier.width(12.dp))
 
                                 Column(modifier = Modifier.weight(1f)) {
-                                    Text("Good Morning", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(
+                                            "Good Morning",
+                                            modifier = Modifier.weight(1f, fill = false),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        val sun by rememberLottieComposition(LottieCompositionSpec.RawRes(R.raw.greeting_sun))
+                                        LottieAnimation(
+                                            composition = sun,
+                                            modifier = Modifier.padding(start = 4.dp).size(22.dp)
+                                        )
+                                    }
                                     Text(
                                         text = userName,
                                         fontWeight = FontWeight.ExtraBold,
@@ -477,7 +521,7 @@ fun WorkoutHomeScreen(
                                     IconButton(onClick = { showNotificationsSheet = true }) {
                                         Box {
                                             Icon(Icons.Outlined.Notifications, contentDescription = "Уведомления", tint = MaterialTheme.colorScheme.onSurface)
-                                            if (unreadNotificationsCount > 0) {
+                                            if (unreadNotificationsCount > 0 || pendingRequests > 0) {
                                                 Box(
                                                     modifier = Modifier
                                                         .size(8.dp)
@@ -489,59 +533,64 @@ fun WorkoutHomeScreen(
                                         }
                                     }
 
-                                    val isTimerActive = restState.running || (restState.remainingMs > 0 && restState.remainingMs < restState.totalMs)
-                                    
-                                    // Запуск анимации при появлении экрана
-                                    var isTimerActiveAnim by remember { mutableStateOf(false) }
-                                    LaunchedEffect(isTimerActive) {
-                                        isTimerActiveAnim = isTimerActive
-                                    }
+                                    val restState by vm.restState.collectAsStateWithLifecycle()
+                                    val runId = restState.runId
+                                    val isTimerActive = runId != null && restState.remainingMs > 0 && !restState.finished
+                                    key(runId ?: vm.lastShownRestRunId) {
+                                        var isTimerActiveAnim by remember {
+                                            mutableStateOf(isTimerActive && vm.lastShownRestRunId == runId)
+                                        }
+                                        LaunchedEffect(isTimerActive) {
+                                            if (isTimerActive) vm.lastShownRestRunId = runId
+                                            isTimerActiveAnim = isTimerActive
+                                        }
 
-                                    val timerColor by animateColorAsState(
-                                        if (isTimerActiveAnim) Color(0xFF00BFFF) else Color.Transparent,
-                                        animationSpec = tween(1000),
-                                        label = "borderColor"
-                                    )
-                                    val iconColor by animateColorAsState(
-                                        if (isTimerActiveAnim) Color(0xFF00BFFF) else MaterialTheme.colorScheme.onSurface,
-                                        animationSpec = tween(1000),
-                                        label = "iconColor"
-                                    )
-                                    val hPad by animateDpAsState(
-                                        if (isTimerActiveAnim) 12.dp else 8.dp,
-                                        animationSpec = tween(1000),
-                                        label = "hPad"
-                                    )
+                                        val timerColor by animateColorAsState(
+                                            if (isTimerActiveAnim) Color(0xFF00BFFF) else Color.Transparent,
+                                            animationSpec = tween(1000),
+                                            label = "borderColor"
+                                        )
+                                        val iconColor by animateColorAsState(
+                                            if (isTimerActiveAnim) Color(0xFF00BFFF) else MaterialTheme.colorScheme.onSurface,
+                                            animationSpec = tween(1000),
+                                            label = "iconColor"
+                                        )
+                                        val hPad by animateDpAsState(
+                                            if (isTimerActiveAnim) 12.dp else 8.dp,
+                                            animationSpec = tween(1000),
+                                            label = "hPad"
+                                        )
 
-                                    Box(
-                                        modifier = Modifier
-                                            .clip(RoundedCornerShape(50))
-                                            .border(1.dp, timerColor, RoundedCornerShape(50))
-                                            .clickable { onOpenTimer() }
-                                            .padding(horizontal = hPad, vertical = 8.dp),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Icon(
-                                                imageVector = Icons.Outlined.Timer,
-                                                contentDescription = "Таймер",
-                                                tint = iconColor,
-                                                modifier = Modifier.size(24.dp)
-                                            )
-                                            AnimatedVisibility(
-                                                visible = isTimerActiveAnim,
-                                                enter = fadeIn(tween(1000)) + expandHorizontally(tween(1000)),
-                                                exit = fadeOut(tween(1000)) + shrinkHorizontally(tween(1000))
-                                            ) {
-                                                Text(
-                                                    text = Fmt.clock(restState.remainingMs),
-                                                    color = Color(0xFF00BFFF),
-                                                    fontWeight = FontWeight.Bold,
-                                                    style = LocalTextStyle.current.copy(
-                                                        fontFeatureSettings = "tnum"
-                                                    ),
-                                                    modifier = Modifier.padding(start = 6.dp)
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(50))
+                                                .border(1.dp, timerColor, RoundedCornerShape(50))
+                                                .clickable { onOpenTimer() }
+                                                .padding(horizontal = hPad, vertical = 8.dp),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Icon(
+                                                    imageVector = Icons.Outlined.Timer,
+                                                    contentDescription = "Таймер",
+                                                    tint = iconColor,
+                                                    modifier = Modifier.size(24.dp)
                                                 )
+                                                AnimatedVisibility(
+                                                    visible = isTimerActiveAnim,
+                                                    enter = fadeIn(tween(1000)) + expandHorizontally(tween(1000)),
+                                                    exit = fadeOut(tween(1000)) + shrinkHorizontally(tween(1000))
+                                                ) {
+                                                    Text(
+                                                        text = Fmt.clock(restState.remainingMs),
+                                                        color = Color(0xFF00BFFF),
+                                                        fontWeight = FontWeight.Bold,
+                                                        style = LocalTextStyle.current.copy(
+                                                            fontFeatureSettings = "tnum"
+                                                        ),
+                                                        modifier = Modifier.padding(start = 6.dp)
+                                                    )
+                                                }
                                             }
                                         }
                                     }
@@ -551,7 +600,7 @@ fun WorkoutHomeScreen(
                         
                         // Незавершённая тренировка
                         active?.let { a ->
-                            item {
+                            item(key = "active", contentType = "active") {
                                 ActiveWorkoutCard(
                                     workout = a,
                                     onClick = { onOpenSession(a.workout.id) }
@@ -561,32 +610,20 @@ fun WorkoutHomeScreen(
                     }
                     
                     "CALENDAR" -> {
-                        item {
+                        item(key = "calendar", contentType = "calendar") {
                             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Row(
-                                    Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text("Календарь недели", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                                    Text(
-                                        "Сегодня: ${Fmt.dayName(today.dayOfWeek.value)}, ${today.dayOfMonth} ${Fmt.monthName(today.monthValue)}",
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Medium,
-                                        color = Color(0xFFA0A7B8)
-                                    )
-                                }
+                                WeekCalendarHeading(today)
                                 WeekCalendarRow(
                                     selectedDate = selectedDate,
                                     onDateSelected = { date ->
                                         selectedDate = date
                                         val epochDay = date.toEpochDay()
                                         val dayWorkouts = workoutsByDate[epochDay] ?: emptyList()
-                                        val targetW = dayWorkouts.find { it.workout.status == WorkoutStatus.IN_PROGRESS }
-                                            ?: dayWorkouts.find { it.workout.status == WorkoutStatus.PLANNED }
-                                            ?: dayWorkouts.find { it.workout.status == WorkoutStatus.COMPLETED }
+                                        val targetW = dayWorkouts.find { it.status == WorkoutStatus.IN_PROGRESS }
+                                            ?: dayWorkouts.find { it.status == WorkoutStatus.PLANNED }
+                                            ?: dayWorkouts.find { it.status == WorkoutStatus.COMPLETED }
                                         if (targetW != null) {
-                                            onOpenDetail(targetW.workout.id)
+                                            onOpenDetail(targetW.id)
                                         }
                                     },
                                     completedDates = completedDates,
@@ -598,13 +635,13 @@ fun WorkoutHomeScreen(
                     }
                     
                     "PLANNED" -> {
-                        item { SectionTitle("Запланированные") }
+                        item(key = "planned_title", contentType = "title") { SectionTitle("Запланированные") }
                         if (planned.isEmpty()) {
-                            item {
+                            item(key = "planned_empty", contentType = "empty") {
                                 EmptyState(Icons.Filled.FitnessCenter, "Пока нет запланированных тренировок", "Создайте новую с помощью кнопки +")
                             }
                         } else {
-                            item {
+                            item(key = "planned_carousel", contentType = "carousel") {
                                 PlannedWorkoutsCarousel(
                                     planned = planned,
                                     isActive = active != null,
@@ -616,16 +653,16 @@ fun WorkoutHomeScreen(
                     }
                     
                     "PINNED" -> {
-                        item { SectionTitle("Закреплённые шаблоны") }
+                        item(key = "pinned_title", contentType = "title") { SectionTitle("Закреплённые шаблоны") }
                         if (pinned.isEmpty()) {
-                            item {
+                            item(key = "pinned_empty", contentType = "empty") {
                                 EmptyState(
                                     Icons.Filled.PushPin, "Нет закреплённых тренировок",
                                     "Закрепите занятие в Истории, чтобы быстро начинать его"
                                 )
                             }
                         } else {
-                            items(pinned, key = { "p${it.workout.id}" }) { w ->
+                            items(pinned, key = { it.workout.id }, contentType = { "pinned" }) { w ->
                                 PinnedWorkoutCard(
                                     workout = w,
                                     onClick = { onOpenDetail(w.workout.id) },
@@ -649,43 +686,69 @@ fun WorkoutHomeScreen(
     if (showNotificationsSheet) {
         val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false)
         
-        LaunchedEffect(Unit) {
-            vm.markNotificationsAsRead()
-        }
+        var unreadOnly by remember { mutableStateOf(false) }
+        val visibleNotifications = if (unreadOnly) notifications.filterNot { it.isRead } else notifications
+        val timeFormat = remember { DateTimeFormatter.ofPattern("dd.MM · HH:mm").withZone(ZoneId.systemDefault()) }
 
         ModalBottomSheet(
             onDismissRequest = { showNotificationsSheet = false },
             sheetState = sheetState,
-            containerColor = Color(0xFF1B1D25)
+            containerColor = DenTrainPalette.Panel
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 8.dp)
             ) {
-                Text(
-                    text = "Уведомления",
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = Color.White,
-                    modifier = Modifier.padding(bottom = 16.dp)
-                )
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Уведомления", Modifier.weight(1f), fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                    TextButton(onClick = { vm.markNotificationsAsRead() }, enabled = unreadNotificationsCount > 0) {
+                        Text("Прочитать все")
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = { unreadOnly = false }, enabled = unreadOnly) { Text("Все") }
+                    TextButton(onClick = { unreadOnly = true }, enabled = !unreadOnly) {
+                        Text("Непрочитанные ($unreadNotificationsCount)")
+                    }
+                }
+                notificationError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
 
-                if (notifications.isEmpty()) {
+                if (pendingRequests > 0) {
+                    TextButton(
+                        onClick = {
+                            showNotificationsSheet = false
+                            onOpenTrainerRequests()
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Заявки на рассмотрении · $pendingRequests")
+                    }
+                }
+
+                if (visibleNotifications.isEmpty()) {
                     Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
-                        Text("Нет новых уведомлений", color = Color(0xFFA0A7B8))
+                        Text(if (unreadOnly) "Всё прочитано" else "Уведомлений пока нет", color = DenTrainPalette.MutedText)
                     }
                 } else {
                     LazyColumn(
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                         modifier = Modifier.fillMaxWidth().heightIn(max = 400.dp)
                     ) {
-                        items(notifications, key = { it.id }) { notif ->
+                        items(visibleNotifications, key = { it.id }) { notif ->
+                            val opensRequests = notif.opensTrainerRequests && canReceiveRequests
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(12.dp))
-                                    .background(if (notif.isRead) Color(0xFF242732) else Color(0xFF2C3140))
+                                    .background(if (notif.isRead) DenTrainPalette.RaisedPanel else Color(0xFF2C3140))
+                                    .clickable(enabled = !notif.isRead || opensRequests) {
+                                        if (!notif.isRead) vm.markNotificationsAsRead(notif.id)
+                                        if (opensRequests) {
+                                            showNotificationsSheet = false
+                                            onOpenTrainerRequests()
+                                        }
+                                    }
                                     .padding(16.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
@@ -702,7 +765,7 @@ fun WorkoutHomeScreen(
                                         else -> Icons.Outlined.Notifications
                                     }
                                     val tint = when (notif.type) {
-                                        "success" -> Color(0xFFA6FF00)
+                                        "success" -> DenTrainPalette.Lime
                                         "warning" -> Color(0xFFEF5350)
                                         else -> Color(0xFF2196F3)
                                     }
@@ -712,7 +775,10 @@ fun WorkoutHomeScreen(
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(notif.title, fontWeight = FontWeight.Bold, color = Color.White, fontSize = 15.sp)
                                     Spacer(Modifier.height(4.dp))
-                                    Text(notif.message, color = Color(0xFFA0A7B8), fontSize = 13.sp, lineHeight = 18.sp)
+                                    Text(notif.message, color = DenTrainPalette.MutedText, fontSize = 13.sp, lineHeight = 18.sp)
+                                    if (notif.timestamp > 0) {
+                                        Text(timeFormat.format(Instant.ofEpochMilli(notif.timestamp)), color = DenTrainPalette.MutedText, fontSize = 11.sp)
+                                    }
                                 }
                             }
                         }
@@ -721,6 +787,34 @@ fun WorkoutHomeScreen(
                 Spacer(Modifier.height(24.dp))
             }
         }
+    }
+}
+
+private val calendarDateFormat = DateTimeFormatter.ofPattern("d\u00A0MMMM", Locale.forLanguageTag("ru"))
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun WeekCalendarHeading(today: LocalDate) {
+    FlowRow(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Text(
+            text = "Календарь недели",
+            modifier = Modifier.align(Alignment.CenterVertically).padding(end = 12.dp),
+            fontSize = 17.sp,
+            fontWeight = FontWeight.Bold,
+            color = Color.White
+        )
+        Text(
+            text = "Сегодня: ${Fmt.dayName(today.dayOfWeek.value)}, ${today.format(calendarDateFormat)}",
+            modifier = Modifier.align(Alignment.CenterVertically),
+            fontSize = 12.sp,
+            lineHeight = 16.sp,
+            fontWeight = FontWeight.Medium,
+            color = DenTrainPalette.MutedText
+        )
     }
 }
 
@@ -735,22 +829,7 @@ private fun PlannedWorkoutsCarousel(
     val pagerState = rememberPagerState(pageCount = { planned.size })
     val coroutineScope = rememberCoroutineScope()
 
-    val targetStartPadding = when {
-        planned.size <= 1 -> 0.dp
-        pagerState.currentPage == 0 -> 0.dp
-        pagerState.currentPage == planned.size - 1 -> 28.dp
-        else -> 24.dp
-    }
-
-    val targetEndPadding = when {
-        planned.size <= 1 -> 0.dp
-        pagerState.currentPage == 0 -> 28.dp
-        pagerState.currentPage == planned.size - 1 -> 0.dp
-        else -> 24.dp
-    }
-
-    val startPadding by animateDpAsState(targetStartPadding, animationSpec = tween(300), label = "startPadding")
-    val endPadding by animateDpAsState(targetEndPadding, animationSpec = tween(300), label = "endPadding")
+    val edgePadding = if (planned.size > 1) 24.dp else 0.dp
 
     Box(
         modifier = Modifier
@@ -760,15 +839,12 @@ private fun PlannedWorkoutsCarousel(
     ) {
         HorizontalPager(
             state = pagerState,
-            contentPadding = PaddingValues(start = startPadding, end = endPadding),
+            contentPadding = PaddingValues(horizontal = edgePadding),
+            key = { planned[it].workout.id },
             pageSpacing = 12.dp,
             modifier = Modifier.fillMaxWidth()
         ) { page ->
             val workout = planned[page]
-            val pageOffset = ((pagerState.currentPage - page) + pagerState.currentPageOffsetFraction)
-            val absOffset = abs(pageOffset).coerceIn(0f, 1f)
-            val alpha = 1f - (absOffset * 0.65f)
-
             PlannedWorkoutCard(
                 workout = workout,
                 isActive = isActive,
@@ -776,7 +852,10 @@ private fun PlannedWorkoutsCarousel(
                 onEdit = { onEdit(workout.workout.id) },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .graphicsLayer { this.alpha = alpha }
+                    .graphicsLayer {
+                        val pageOffset = pagerState.currentPage - page + pagerState.currentPageOffsetFraction
+                        alpha = 1f - abs(pageOffset).coerceIn(0f, 1f) * 0.65f
+                    }
             )
         }
 
@@ -846,7 +925,7 @@ private fun PlannedWorkoutCard(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val neoGreen = Color(0xFFBFFF00)
+    val neoGreen = DenTrainPalette.NeonGreen
 
     val date = remember(workout.workout.dateEpochDay) {
         LocalDate.ofEpochDay(workout.workout.dateEpochDay)
@@ -869,65 +948,19 @@ private fun PlannedWorkoutCard(
         workout.exercises.sumOf { it.exercise.plannedSets.coerceAtLeast(1) }
     }
 
-    Box(
+    BoxWithConstraints(
         modifier = modifier
             .fillMaxWidth()
-            .height(145.dp)
             .clip(RoundedCornerShape(16.dp))
-            .background(Color(0xFF1B1D25))
-            .border(BorderStroke(1.dp, Color(0xFF282B36)), RoundedCornerShape(16.dp))
+            .background(DenTrainPalette.Panel)
+            .border(BorderStroke(1.dp, DenTrainPalette.SubtleBorder), RoundedCornerShape(16.dp))
             .padding(12.dp)
     ) {
-        Row(
-            modifier = Modifier.fillMaxSize(),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
+        val stackDate = maxWidth < 360.dp && LocalDensity.current.fontScale > 1.3f
+        val details: @Composable (Modifier) -> Unit = { detailsModifier ->
             Column(
-                modifier = Modifier.width(50.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center
-            ) {
-                Text(
-                    text = dayOfWeekName,
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = neoGreen,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    text = dayOfMonth,
-                    fontSize = 24.sp,
-                    fontWeight = FontWeight.ExtraBold,
-                    color = Color.White,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    text = monthName,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = Color(0xFFA0A7B8),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-
-            Box(
-                modifier = Modifier
-                    .padding(horizontal = 8.dp)
-                    .fillMaxHeight()
-                    .width(1.dp)
-                    .background(Color(0xFF282B36))
-            )
-
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxHeight(),
-                verticalArrangement = Arrangement.SpaceBetween
+                modifier = detailsModifier,
+                verticalArrangement = if (stackDate) Arrangement.Top else Arrangement.SpaceBetween
             ) {
                 Text(
                     text = workout.workout.title,
@@ -935,7 +968,7 @@ private fun PlannedWorkoutCard(
                     color = Color.White,
                     fontSize = 16.sp,
                     lineHeight = 20.sp,
-                    maxLines = 2,
+                    maxLines = if (stackDate) Int.MAX_VALUE else 2,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -944,9 +977,9 @@ private fun PlannedWorkoutCard(
                     text = "$exercisesCount ${Fmt.plural(exercisesCount, "упражнение", "упражнения", "упражнений")} · $totalSetsCount ${Fmt.plural(totalSetsCount, "подход", "подхода", "подходов")}",
                     fontSize = 13.sp,
                     fontWeight = FontWeight.Medium,
-                    color = Color(0xFFA0A7B8),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    lineHeight = 18.sp,
+                    color = DenTrainPalette.MutedText,
+                    modifier = Modifier.padding(vertical = 6.dp)
                 )
 
                 Row(
@@ -958,10 +991,10 @@ private fun PlannedWorkoutCard(
                         modifier = Modifier
                             .weight(1f, fill = false)
                             .clip(RoundedCornerShape(12.dp))
-                            .background(if (!isActive && workout.exercises.isNotEmpty()) neoGreen else Color(0xFF242732))
+                            .background(if (!isActive && workout.exercises.isNotEmpty()) neoGreen else DenTrainPalette.RaisedPanel)
                             .border(
                                 1.dp,
-                                if (!isActive && workout.exercises.isNotEmpty()) Color.Transparent else Color(0xFF333644),
+                                if (!isActive && workout.exercises.isNotEmpty()) Color.Transparent else DenTrainPalette.Border,
                                 RoundedCornerShape(12.dp)
                             )
                             .clickable(enabled = !isActive && workout.exercises.isNotEmpty()) {
@@ -978,16 +1011,15 @@ private fun PlannedWorkoutCard(
                             Icon(
                                 imageVector = if (!isActive) Icons.Filled.PlayArrow else Icons.Filled.Lock,
                                 contentDescription = null,
-                                tint = if (!isActive && workout.exercises.isNotEmpty()) Color.Black else Color(0xFFA0A7B8),
+                                tint = if (!isActive && workout.exercises.isNotEmpty()) Color.Black else DenTrainPalette.MutedText,
                                 modifier = Modifier.size(16.dp)
                             )
                             Text(
                                 text = if (!isActive) "Начать тренировку" else "Завершите текущую",
-                                color = if (!isActive && workout.exercises.isNotEmpty()) Color.Black else Color(0xFFA0A7B8),
+                                color = if (!isActive && workout.exercises.isNotEmpty()) Color.Black else DenTrainPalette.MutedText,
                                 fontWeight = FontWeight.Bold,
-                                fontSize = 13.sp,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
+                                fontSize = if (isActive) 11.sp else 13.sp,
+                                maxLines = if (isActive) 1 else Int.MAX_VALUE
                             )
                         }
                     }
@@ -1008,53 +1040,109 @@ private fun PlannedWorkoutCard(
                 }
             }
         }
+        if (stackDate) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = buildAnnotatedString {
+                        withStyle(SpanStyle(color = neoGreen, fontWeight = FontWeight.Bold)) {
+                            append(dayOfWeekName)
+                        }
+                        append("  ")
+                        withStyle(SpanStyle(color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.ExtraBold)) {
+                            append(dayOfMonth)
+                        }
+                        append(" ")
+                        append(monthName)
+                    },
+                    color = DenTrainPalette.MutedText,
+                    fontSize = 15.sp
+                )
+                Box(Modifier.fillMaxWidth().height(1.dp).background(DenTrainPalette.SubtleBorder))
+                details(Modifier.fillMaxWidth())
+            }
+        } else {
+            Row(
+                modifier = Modifier.fillMaxWidth().heightIn(min = 121.dp).height(IntrinsicSize.Min),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(
+                    modifier = Modifier.widthIn(min = 50.dp, max = 80.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Text(
+                        text = dayOfWeekName,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = neoGreen,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = dayOfMonth,
+                        fontSize = 24.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = Color.White,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = monthName,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = DenTrainPalette.MutedText,
+                        textAlign = TextAlign.Center
+                    )
+                }
+
+                Box(
+                    modifier = Modifier
+                        .padding(horizontal = 8.dp)
+                        .fillMaxHeight()
+                        .width(1.dp)
+                        .background(DenTrainPalette.SubtleBorder)
+                )
+
+                details(Modifier.weight(1f).fillMaxHeight())
+            }
+        }
     }
 }
 
 /** Карточка Закрепленной тренировки с золотым бейджем «📌 Избранный шаблон». */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun PinnedWorkoutCard(
-    workout: WorkoutWithExercises,
+    workout: WorkoutListEntry,
     onClick: () -> Unit,
     onUnpin: () -> Unit
 ) {
     val w = workout.workout
-    val cardBg = Color(0xFF1B1D25)
-    val borderColor = Color(0xFF282B36)
-    val labelColor = Color(0xFFA0A7B8)
-    val accentColor = Color(0xFFA6FF00) // салатовый акцент
-    val datePillBg = Color(0xFF242732)
-    val datePillBorder = Color(0xFF333644)
+    val labelColor = DenTrainPalette.MutedText
+    val accentColor = DenTrainPalette.Lime // салатовый акцент
+    val datePillBg = DenTrainPalette.RaisedPanel
+    val datePillBorder = DenTrainPalette.Border
 
     val dayName = remember(w.dayOfWeek) { Fmt.dayName(w.dayOfWeek) }
-    val dateText = remember(w.dateEpochDay) {
-        val formatter = DateTimeFormatter.ofPattern("d MMMM yyyy", Locale("ru"))
-        LocalDate.ofEpochDay(w.dateEpochDay).format(formatter)
-    }
+    val dateText = remember(w.dateEpochDay) { Fmt.displayDate(w.dateEpochDay) }
 
-    val exercisesCount = workout.exercises.size
-    val setsCount = workout.doneSets()
-    val durationText = Fmt.durationText(w.startedAt, w.completedAt)
+    val exercisesCount = workout.exercisesCount
+    val setsCount = workout.setsCount
+    val durationText = remember(w.startedAt, w.completedAt) { Fmt.durationText(w.startedAt, w.completedAt) }
 
     val gold = Color(0xFFFFB300)
-    val weakGold = gold.copy(alpha = 0.3f)
-    val baseBorder = BorderStroke(1.dp, weakGold)
-
-    var cardModifier = Modifier
+    val shape = RoundedCornerShape(16.dp)
+    val pinnedBorder = remember {
+        Brush.linearGradient(0f to gold, 0.3f to Color.Transparent, 0.7f to Color.Transparent, 1f to gold)
+    }
+    val cardModifier = Modifier
         .fillMaxWidth()
-        .clip(RoundedCornerShape(16.dp))
-        .background(cardBg)
-        .border(baseBorder, RoundedCornerShape(16.dp))
-        .border(
-            width = 2.dp,
-            brush = Brush.linearGradient(
-                0.0f to gold,
-                0.3f to Color.Transparent,
-                0.7f to Color.Transparent,
-                1.0f to gold
-            ),
-            shape = RoundedCornerShape(16.dp)
-        )
+        .clip(shape)
+        .background(DenTrainPalette.Panel)
+        .border(1.dp, gold.copy(alpha = 0.3f), shape)
+        .border(2.dp, pinnedBorder, shape)
         .clickable { onClick() }
         .padding(horizontal = 16.dp, vertical = 12.dp)
 
@@ -1074,7 +1162,7 @@ private fun PinnedWorkoutCard(
                     fontSize = 17.sp,
                     fontWeight = FontWeight.Bold,
                     color = Color.White,
-                    maxLines = 1,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
                 )
@@ -1094,82 +1182,53 @@ private fun PinnedWorkoutCard(
             }
 
             // День недели и дата (День выделен)
-            Row(
+            Text(
+                text = buildAnnotatedString {
+                    withStyle(SpanStyle(color = accentColor, fontWeight = FontWeight.Bold)) {
+                        append(dayName)
+                    }
+                    append(", ")
+                    append(dateText)
+                },
                 modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = dayName,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = accentColor
-                )
-                Text(
-                    text = ", $dateText",
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = labelColor
-                )
-            }
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+                color = labelColor
+            )
 
             // Статистика: Упражнения | Подходы   [ Длительность в капсуле справа ]
-            Row(
+            FlowRow(
                 modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                // Упражнений
-                Row(verticalAlignment = Alignment.Bottom) {
-                    Text(
-                        text = exercisesCount.toString(),
-                        fontSize = 20.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                        color = Color.White
-                    )
-                    Spacer(Modifier.width(4.dp))
-                    Text(
-                        text = Fmt.plural(exercisesCount, "упражнение", "упражнения", "упражнений"),
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = labelColor,
-                        modifier = Modifier.padding(bottom = 2.dp)
-                    )
+                FlowRow(
+                    modifier = Modifier.align(Alignment.CenterVertically),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    // Упражнений
+                    WorkoutListCount(exercisesCount, Fmt.plural(exercisesCount, "упражнение", "упражнения", "упражнений"), labelColor)
+
+                    // Подходов
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .padding(horizontal = 10.dp)
+                                .height(16.dp)
+                                .width(1.dp)
+                                .background(Color.White.copy(alpha = 0.15f))
+                        )
+                        WorkoutListCount(setsCount, Fmt.plural(setsCount, "подход", "подхода", "подходов"), labelColor)
+                    }
                 }
-
-                // Разделитель
-                Box(
-                    modifier = Modifier
-                        .padding(horizontal = 10.dp)
-                        .height(16.dp)
-                        .width(1.dp)
-                        .background(Color.White.copy(alpha = 0.15f))
-                )
-
-                // Подходов
-                Row(verticalAlignment = Alignment.Bottom) {
-                    Text(
-                        text = setsCount.toString(),
-                        fontSize = 20.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                        color = Color.White
-                    )
-                    Spacer(Modifier.width(4.dp))
-                    Text(
-                        text = Fmt.plural(setsCount, "подход", "подхода", "подходов"),
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = labelColor,
-                        modifier = Modifier.padding(bottom = 2.dp)
-                    )
-                }
-
-                Spacer(Modifier.weight(1f))
 
                 // Капсула времени
                 if (durationText != null) {
                     Box(
                         modifier = Modifier
-                            .clip(CircleShape)
-                            .background(datePillBg)
+                            .align(Alignment.CenterVertically)
+                            .padding(start = 4.dp)
+                            .background(datePillBg, CircleShape)
                             .border(BorderStroke(1.dp, datePillBorder), CircleShape)
                             .padding(horizontal = 8.dp, vertical = 3.dp)
                     ) {
@@ -1250,190 +1309,8 @@ private fun StatBox(value: String, label: String, modifier: Modifier = Modifier)
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text(value, fontSize = 20.sp, fontWeight = FontWeight.ExtraBold, color = Color.White)
-        Text(label, fontSize = 11.sp, color = Color(0xFFA0A7B8), textAlign = TextAlign.Center)
+        Text(label, fontSize = 11.sp, color = DenTrainPalette.MutedText, textAlign = TextAlign.Center)
     }
-}
-
-/** Карточка календаря с кликабельными днями. Ровно 3 состояния: Тренировка / Запланированная, По плану, Отдых. */
-@Composable
-private fun CalendarCard(
-    allWorkouts: List<WorkoutWithExercises>,
-    settings: SettingsEntity,
-    onConfigureDays: () -> Unit,
-    onOpenWorkout: (WorkoutWithExercises) -> Unit,
-    onCreateForDate: (Long) -> Unit
-) {
-    val context = LocalContext.current
-    val today = LocalDate.now()
-    val startOfWeek = today.minusDays((today.dayOfWeek.value - 1).toLong())
-    val weekDays = (0..6).map { startOfWeek.plusDays(it.toLong()) }
-
-    val scheduledSet = remember(settings.scheduledDays) {
-        settings.scheduledDays.split(",").mapNotNull { it.trim().toIntOrNull() }.toSet()
-    }
-
-    val workoutsByDate = remember(allWorkouts) {
-        allWorkouts.groupBy { it.workout.dateEpochDay }
-    }
-
-    ZCard {
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column {
-                Text("Календарь недели", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                Text("Сегодня: ${Fmt.dayName(today.dayOfWeek.value)}, ${today.dayOfMonth} ${Fmt.monthName(today.monthValue)}", fontSize = 12.sp, fontWeight = FontWeight.Medium, color = Color(0xFFA0A7B8))
-            }
-            IconButton(onClick = onConfigureDays) {
-                Icon(Icons.Filled.CalendarMonth, "Дни тренировок", tint = Color(0xFFA6FF00))
-            }
-        }
-
-        Spacer(Modifier.height(12.dp))
-
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            weekDays.forEach { date ->
-                val epochDay = date.toEpochDay()
-                val dayOfWeekVal = date.dayOfWeek.value
-                val isToday = date == today
-
-                val dayWorkouts = workoutsByDate[epochDay] ?: emptyList()
-                val completedW = dayWorkouts.find { it.workout.status == WorkoutStatus.COMPLETED }
-                val activeW = dayWorkouts.find { it.workout.status == WorkoutStatus.IN_PROGRESS }
-                val plannedW = dayWorkouts.find { it.workout.status == WorkoutStatus.PLANNED }
-
-                val hasWorkout = completedW != null || activeW != null || plannedW != null
-                val isScheduled = dayOfWeekVal in scheduledSet
-
-                val dayName = Fmt.dayShort[(dayOfWeekVal - 1).coerceIn(0, 6)]
-
-                val bgColor = when {
-                    hasWorkout -> Color(0xFFA6FF00)
-                    isScheduled -> Color(0xFF242732)
-                    else -> Color(0xFF1B1D25)
-                }
-
-                val textColor = when {
-                    hasWorkout -> Color.Black
-                    isScheduled -> Color.White
-                    else -> Color(0xFFA0A7B8)
-                }
-
-                val shape = RoundedCornerShape(12.dp)
-                val border = when {
-                    isToday -> BorderStroke(2.dp, Color.White)
-                    isScheduled -> BorderStroke(1.dp, Color(0xFF333644))
-                    else -> BorderStroke(1.dp, Color(0xFF282B36))
-                }
-
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier
-                        .weight(1f)
-                        .padding(horizontal = 2.dp)
-                        .clip(shape)
-                        .border(border, shape)
-                        .background(bgColor)
-                        .clickable {
-                            Haptic.click(context)
-                            val targetW = activeW ?: plannedW ?: completedW
-                            if (targetW != null) {
-                                onOpenWorkout(targetW)
-                            } else {
-                                onCreateForDate(epochDay)
-                            }
-                        }
-                        .padding(vertical = 8.dp, horizontal = 2.dp)
-                ) {
-                    Text(dayName, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = textColor)
-                    Text("${date.dayOfMonth}", fontSize = 15.sp, fontWeight = FontWeight.ExtraBold, color = textColor)
-
-                    Box(
-                        Modifier
-                            .padding(top = 4.dp)
-                            .size(6.dp)
-                            .clip(CircleShape)
-                            .background(
-                                when {
-                                    hasWorkout -> Color.Black
-                                    isScheduled -> Color(0xFFA6FF00)
-                                    else -> Color.Transparent
-                                }
-                            )
-                    )
-                }
-            }
-        }
-
-        Row(
-            Modifier.fillMaxWidth().padding(top = 12.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally)
-        ) {
-            LegendItem(Color(0xFFA6FF00), "Запланированная")
-            LegendItem(Color(0xFF242732), "По плану")
-            LegendItem(Color(0xFF1B1D25), "Отдых")
-        }
-    }
-}
-
-@Composable
-private fun LegendItem(color: Color, label: String) {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-        Box(Modifier.size(8.dp).clip(CircleShape).background(color))
-        Text(label, fontSize = 11.sp, fontWeight = FontWeight.Medium, color = Color(0xFFA0A7B8))
-    }
-}
-
-/** Диалог настройки регулярных тренировочных дней. */
-@Composable
-private fun ScheduledDaysDialog(
-    currentDaysStr: String,
-    onSave: (Set<Int>) -> Unit,
-    onDismiss: () -> Unit
-) {
-    val initialSet = remember(currentDaysStr) {
-        currentDaysStr.split(",").mapNotNull { it.trim().toIntOrNull() }.toSet()
-    }
-    var selectedDays by remember { mutableStateOf(initialSet) }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Тренировочные дни") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Выберите регулярные дни, в которые вы обычно тренируетесь:")
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    (1..7).forEach { dayVal ->
-                        val label = Fmt.dayShort[(dayVal - 1).coerceIn(0, 6)]
-                        val isSel = dayVal in selectedDays
-                        FilterChip(
-                            selected = isSel,
-                            onClick = {
-                                selectedDays = if (isSel) selectedDays - dayVal else selectedDays + dayVal
-                            },
-                            label = { Text(label, fontSize = 12.sp) },
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = { onSave(selectedDays) }) { Text("Сохранить") }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Отмена") }
-        }
-    )
 }
 
 @Preview(showBackground = true)
@@ -1477,7 +1354,7 @@ fun EditBlocksMode(
         verticalArrangement = Arrangement.spacedBy(spacing)
     ) {
         Text("Порядок блоков", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color.White)
-        Text("Удерживайте и перетаскивайте для изменения.", fontSize = 13.sp, color = Color(0xFFA0A7B8))
+        Text("Удерживайте и перетаскивайте для изменения.", fontSize = 13.sp, color = DenTrainPalette.MutedText)
         
         Spacer(Modifier.height(16.dp))
 
@@ -1504,8 +1381,8 @@ fun EditBlocksMode(
                         .offset(y = if (isDragging) animatedOffset + with(density) { yOffset.toDp() } else animatedOffset)
                         .zIndex(zIndex)
                         .clip(RoundedCornerShape(16.dp))
-                        .background(Color(0xFF1B1D25))
-                        .border(BorderStroke(1.dp, Color(0xFF282B36)), RoundedCornerShape(16.dp))
+                        .background(DenTrainPalette.Panel)
+                        .border(BorderStroke(1.dp, DenTrainPalette.SubtleBorder), RoundedCornerShape(16.dp))
                         .pointerInput(Unit) {
                             detectDragGesturesAfterLongPress(
                                 onDragStart = { draggedIndex = index },
@@ -1540,7 +1417,7 @@ fun EditBlocksMode(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(displayTitle, fontWeight = FontWeight.Bold, fontSize = 18.sp, color = Color.White)
-                        Icon(Icons.Filled.DragHandle, contentDescription = "Drag", tint = Color(0xFFA6FF00))
+                        Icon(Icons.Filled.DragHandle, contentDescription = "Drag", tint = DenTrainPalette.Lime)
                     }
                 }
             }
@@ -1551,7 +1428,7 @@ fun EditBlocksMode(
         Button(
             onClick = { onClose(items) },
             modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFA6FF00), contentColor = Color.Black),
+            colors = ButtonDefaults.buttonColors(containerColor = DenTrainPalette.Lime, contentColor = Color.Black),
             shape = RoundedCornerShape(12.dp)
         ) {
             Text("Готово", fontWeight = FontWeight.Bold)

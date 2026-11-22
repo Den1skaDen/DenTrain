@@ -20,7 +20,9 @@ data class TimerState(
     val totalMs: Long = 0,
     val remainingMs: Long = 0,
     val running: Boolean = false,
-    val finished: Boolean = false
+    val finished: Boolean = false,
+    val runId: Long? = null,
+    val endsAtElapsedMs: Long? = null
 )
 
 /**
@@ -41,6 +43,7 @@ class RestTimer(private val context: Context) {
 
     private var endAt = 0L          // момент окончания по SystemClock.elapsedRealtime()
     private var tickJob: Job? = null
+    private var lastRunId = 0L
 
     /** Задать длительность. Останавливает и сбрасывает текущий отсчёт. */
     fun setDuration(seconds: Int) {
@@ -59,7 +62,14 @@ class RestTimer(private val context: Context) {
         if (s.running || s.totalMs <= 0) return
         val remaining = if (s.remainingMs <= 0) s.totalMs else s.remainingMs
         endAt = SystemClock.elapsedRealtime() + remaining
-        _state.value = s.copy(remainingMs = remaining, running = true, finished = false)
+        val runId = if (s.remainingMs <= 0) ++lastRunId else s.runId ?: ++lastRunId
+        _state.value = s.copy(
+            remainingMs = remaining,
+            running = true,
+            finished = false,
+            runId = runId,
+            endsAtElapsedMs = endAt
+        )
         scheduleAlarm(endAt)
         startTicking()
     }
@@ -68,12 +78,12 @@ class RestTimer(private val context: Context) {
         if (!_state.value.running) return
         val left = (endAt - SystemClock.elapsedRealtime()).coerceAtLeast(0)
         stopTicking()
-        _state.update { it.copy(remainingMs = left, running = false) }
+        _state.update { it.copy(remainingMs = left, running = false, endsAtElapsedMs = null) }
     }
 
     fun reset() {
         stopTicking()
-        _state.update { it.copy(remainingMs = it.totalMs, running = false, finished = false) }
+        _state.update { TimerState(totalMs = it.totalMs, remainingMs = it.totalMs) }
     }
 
     /** Запуск отдыха «с нуля» на заданное число секунд (после сохранения подхода). */
@@ -112,7 +122,7 @@ class RestTimer(private val context: Context) {
         tickJob?.cancel()
         tickJob = null
         cancelAlarm()
-        _state.update { it.copy(remainingMs = 0, running = false, finished = true) }
+        _state.update { it.copy(remainingMs = 0, running = false, finished = true, endsAtElapsedMs = null) }
         TimerNotifier.notifyFinished(context)
     }
 

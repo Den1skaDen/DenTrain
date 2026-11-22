@@ -2,6 +2,7 @@ package com.dentrain.util
 
 import com.dentrain.data.SetResultEntity
 import com.dentrain.data.WorkoutEntity
+import com.dentrain.data.ExerciseWithSets
 import com.dentrain.data.WorkoutWithExercises
 import java.math.BigDecimal
 import java.time.LocalDate
@@ -16,6 +17,7 @@ object Fmt {
     val monthNames = listOf("янв.", "февр.", "марта", "апр.", "мая", "июня", "июля", "авг.", "сент.", "окт.", "нояб.", "дек.")
 
     private val longFormat = DateTimeFormatter.ofPattern("d MMMM yyyy 'г.'", Locale.forLanguageTag("ru"))
+    private val dateFormat = DateTimeFormatter.ofPattern("d MMMM yyyy", Locale.forLanguageTag("ru"))
     private val shortFormat = DateTimeFormatter.ofPattern("dd.MM.yyyy")
 
     fun dayName(day: Int): String = dayNames[(day - 1).coerceIn(0, 6)]
@@ -23,6 +25,7 @@ object Fmt {
 
 
     fun shortDate(epochDay: Long): String = LocalDate.ofEpochDay(epochDay).format(shortFormat)
+    fun displayDate(epochDay: Long): String = LocalDate.ofEpochDay(epochDay).format(dateFormat)
 
     /** «Понедельник, 19 октября 2026 г.» */
     fun longDate(w: WorkoutEntity): String =
@@ -105,3 +108,12 @@ object Fmt {
 
 
 fun WorkoutWithExercises.doneSets(): Int = exercises.sumOf { it.sets.size }
+
+val ExerciseWithSets.completedWorkingSets: Int
+    get() = sets.count { !it.isWarmup }
+
+val ExerciseWithSets.totalWorkingSets: Int
+    get() = maxOf(exercise.plannedSets, completedWorkingSets)
+
+val ExerciseWithSets.isWorkingPlanComplete: Boolean
+    get() = totalWorkingSets > 0 && completedWorkingSets == totalWorkingSets

@@ -1,6 +1,8 @@
 package com.dentrain.ui.history
 
-import androidx.activity.compose.BackHandler
+import com.dentrain.ui.components.launchUserAction
+import com.dentrain.ui.components.OperationErrorDialog
+import com.dentrain.ui.theme.DenTrainPalette
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -17,6 +19,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -32,7 +35,6 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Visibility
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -41,7 +43,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -70,6 +71,7 @@ import com.dentrain.ui.components.BorderedBackButton
 import com.dentrain.ui.components.ConfirmDialog
 import com.dentrain.ui.components.SetEditDialog
 import com.dentrain.ui.components.appViewModel
+import com.dentrain.ui.components.MetricNumber
 import com.dentrain.util.Fmt
 import com.dentrain.util.Haptic
 import com.dentrain.util.doneSets
@@ -77,12 +79,17 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.launch
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 class DetailViewModel(private val id: Long, private val repo: WorkoutRepository) : ViewModel() {
+    var operationError by mutableStateOf<String?>(null)
+
+    private fun perform(fallback: String, action: suspend () -> Unit) {
+        launchUserAction(fallback, { operationError = it }, action)
+    }
+
     val workout: StateFlow<WorkoutWithExercises?> =
         repo.observeWorkout(id).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
     val pinned: StateFlow<Boolean> = repo.pinnedIds.map { id in it }
@@ -90,11 +97,11 @@ class DetailViewModel(private val id: Long, private val repo: WorkoutRepository)
     val settings: StateFlow<SettingsEntity> =
         repo.settings.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), SettingsEntity())
 
-    fun togglePin() { viewModelScope.launch { repo.setPinned(id, !pinned.value) } }
-    fun delete(onDone: () -> Unit) { viewModelScope.launch { repo.deleteWorkout(id); onDone() } }
-    fun repeat(onDone: (Long) -> Unit) { viewModelScope.launch { onDone(repo.repeatWorkout(id)) } }
-    fun updateSet(set: SetResultEntity, reps: Int, weight: Double?, isWarmup: Boolean = set.isWarmup) { viewModelScope.launch { repo.updateSet(set, reps, weight, isWarmup) } }
-    fun deleteSet(set: SetResultEntity) { viewModelScope.launch { repo.deleteSet(set) } }
+    fun togglePin() { perform("Не удалось обновить закрепление тренировки.") { repo.setPinned(id, !pinned.value) } }
+    fun delete(onDone: () -> Unit) { perform("Не удалось удалить тренировку.") { repo.deleteWorkout(id); onDone() } }
+    fun repeat(onDone: (Long) -> Unit) { perform("Не удалось повторить тренировку.") { onDone(repo.repeatWorkout(id)) } }
+    fun updateSet(set: SetResultEntity, reps: Int, weight: Double?, isWarmup: Boolean = set.isWarmup) { perform("Не удалось изменить подход.") { repo.updateSet(set, reps, weight, isWarmup) } }
+    fun deleteSet(set: SetResultEntity) { perform("Не удалось удалить подход.") { repo.deleteSet(set) } }
 }
 
 @Composable
@@ -106,8 +113,8 @@ private fun DetailCard(
         modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
-            .background(Color(0xFF1B1D25))
-            .border(BorderStroke(1.dp, Color(0xFF282B36)), RoundedCornerShape(16.dp))
+            .background(DenTrainPalette.Panel)
+            .border(BorderStroke(1.dp, DenTrainPalette.SubtleBorder), RoundedCornerShape(16.dp))
             .padding(16.dp)
     ) {
         Column(
@@ -130,27 +137,15 @@ fun WorkoutDetailScreen(
 ) {
     val context = LocalContext.current
     val vm = appViewModel(key = "detail$workoutId") { DetailViewModel(workoutId, it.repository) }
+    OperationErrorDialog(vm.operationError) { vm.operationError = null }
     val workout by vm.workout.collectAsStateWithLifecycle()
     val pinned by vm.pinned.collectAsStateWithLifecycle()
     val settings by vm.settings.collectAsStateWithLifecycle()
 
     var editMode by remember { mutableStateOf(false) }
-    var hasChanges by remember { mutableStateOf(false) }
-    var showExitConfirm by remember { mutableStateOf(false) }
     var showDelete by remember { mutableStateOf(false) }
     var editingSet by remember { mutableStateOf<SetResultEntity?>(null) }
-
-    val handleBack = {
-        if (hasChanges) {
-            showExitConfirm = true
-        } else {
-            onBack()
-        }
-    }
-
-    BackHandler {
-        handleBack()
-    }
+    var setToDelete by remember { mutableStateOf<SetResultEntity?>(null) }
 
     Scaffold(
         containerColor = Color.Black,
@@ -167,7 +162,7 @@ fun WorkoutDetailScreen(
                     )
                 },
                 navigationIcon = {
-                    BorderedBackButton(onClick = { handleBack() })
+                    BorderedBackButton(onClick = onBack)
                 },
                 actions = {
                     IconButton(onClick = {
@@ -177,14 +172,14 @@ fun WorkoutDetailScreen(
                         Icon(
                             imageVector = if (editMode) Icons.Filled.Visibility else Icons.Filled.EditNote,
                             contentDescription = if (editMode) "Режим просмотра" else "Исправить результаты",
-                            tint = if (editMode) Color(0xFFA6FF00) else Color.White
+                            tint = if (editMode) DenTrainPalette.Lime else Color.White
                         )
                     }
                     IconButton(onClick = {
                         Haptic.click(context)
                         showDelete = true
                     }) {
-                        Icon(Icons.Filled.Delete, "Удалить", tint = Color(0xFFFF5252))
+                        Icon(Icons.Filled.Delete, "Удалить", tint = DenTrainPalette.Error)
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Black)
@@ -194,7 +189,7 @@ fun WorkoutDetailScreen(
         val w = workout
         if (w == null) {
             Box(Modifier.padding(pad).fillMaxSize(), Alignment.Center) {
-                CircularProgressIndicator(color = Color(0xFFA6FF00))
+                CircularProgressIndicator(color = DenTrainPalette.Lime)
             }
             return@Scaffold
         }
@@ -222,8 +217,8 @@ fun WorkoutDetailScreen(
                     Box(
                         modifier = Modifier
                             .clip(CircleShape)
-                            .background(if (editMode) Color(0xFF2A2E1A) else Color(0xFF242732))
-                            .border(BorderStroke(1.dp, Color(0xFFA6FF00)), CircleShape)
+                            .background(if (editMode) Color(0xFF2A2E1A) else DenTrainPalette.RaisedPanel)
+                            .border(BorderStroke(1.dp, DenTrainPalette.Lime), CircleShape)
                             .padding(horizontal = 14.dp, vertical = 5.dp)
                     ) {
                         Text(
@@ -256,13 +251,13 @@ fun WorkoutDetailScreen(
                             text = dayName,
                             fontSize = 15.sp,
                             fontWeight = FontWeight.Bold,
-                            color = Color(0xFFA6FF00)
+                            color = DenTrainPalette.Lime
                         )
                         Text(
                             text = ", $dateText",
                             fontSize = 15.sp,
                             fontWeight = FontWeight.Medium,
-                            color = Color(0xFFA0A7B8)
+                            color = DenTrainPalette.MutedText
                         )
                     }
 
@@ -279,7 +274,7 @@ fun WorkoutDetailScreen(
                         Box(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(8.dp))
-                                .background(Color(0xFF242732))
+                                .background(DenTrainPalette.RaisedPanel)
                                 .border(BorderStroke(1.dp, Color.White), RoundedCornerShape(8.dp))
                                 .padding(horizontal = 10.dp, vertical = 5.dp)
                         ) {
@@ -294,7 +289,7 @@ fun WorkoutDetailScreen(
                         Box(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(8.dp))
-                                .background(Color(0xFF242732))
+                                .background(DenTrainPalette.RaisedPanel)
                                 .border(BorderStroke(1.dp, Color.White), RoundedCornerShape(8.dp))
                                 .padding(horizontal = 10.dp, vertical = 5.dp)
                         ) {
@@ -314,7 +309,7 @@ fun WorkoutDetailScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(12.dp))
-                                .background(Color(0xFF242732))
+                                .background(DenTrainPalette.RaisedPanel)
                                 .border(BorderStroke(1.5.dp, Color(0xFFFFB300)), RoundedCornerShape(12.dp))
                                 .padding(12.dp)
                         ) {
@@ -360,15 +355,15 @@ fun WorkoutDetailScreen(
                         Box(
                             modifier = Modifier
                                 .clip(CircleShape)
-                                .background(Color(0xFF242732))
-                                .border(BorderStroke(1.dp, Color(0xFF333644)), CircleShape)
+                                .background(DenTrainPalette.RaisedPanel)
+                                .border(BorderStroke(1.dp, DenTrainPalette.Border), CircleShape)
                                 .padding(horizontal = 10.dp, vertical = 4.dp)
                         ) {
                             Text(
                                 text = "В планах ${item.exercise.plannedSets} подх.",
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Medium,
-                                color = Color(0xFFA0A7B8)
+                                color = DenTrainPalette.MutedText
                             )
                         }
                     }
@@ -381,7 +376,7 @@ fun WorkoutDetailScreen(
                             text = "Подходы пока не выполнены",
                             fontSize = 13.sp,
                             fontWeight = FontWeight.Medium,
-                            color = Color(0xFFA0A7B8),
+                            color = DenTrainPalette.MutedText,
                             modifier = Modifier.padding(vertical = 4.dp)
                         )
                     } else {
@@ -389,8 +384,8 @@ fun WorkoutDetailScreen(
                             sets.forEach { s ->
                                 val isW = s.isWarmup
                                 val numText = if (isW) "Р${s.setNumber}" else "№ ${s.setNumber}"
-                                val repsTextColor = if (isW) Color(0xFFA0A7B8) else Color.White
-                                val weightTextColor = if (isW) Color(0xFFA0A7B8) else Color(0xFFA6FF00)
+                                val repsTextColor = if (isW) DenTrainPalette.MutedText else Color.White
+                                val weightTextColor = if (isW) DenTrainPalette.MutedText else DenTrainPalette.Lime
                                 val textWeight = if (isW) FontWeight.Medium else FontWeight.ExtraBold
 
                                 Row(
@@ -398,8 +393,8 @@ fun WorkoutDetailScreen(
                                         .fillMaxWidth()
                                         .height(IntrinsicSize.Min)
                                         .clip(RoundedCornerShape(10.dp))
-                                        .background(Color(0xFF242732))
-                                        .border(BorderStroke(1.dp, Color(0xFF333644)), RoundedCornerShape(10.dp))
+                                        .background(DenTrainPalette.RaisedPanel)
+                                        .border(BorderStroke(1.dp, DenTrainPalette.Border), RoundedCornerShape(10.dp))
                                         .then(if (editMode) Modifier.clickable {
                                             Haptic.click(context)
                                             editingSet = s
@@ -417,140 +412,66 @@ fun WorkoutDetailScreen(
                                             text = numText,
                                             fontSize = 12.sp,
                                             fontWeight = if (isW) FontWeight.Normal else FontWeight.Bold,
-                                            color = Color(0xFFA0A7B8),
+                                            color = DenTrainPalette.MutedText,
                                             modifier = Modifier.width(36.dp)
                                         )
 
-                                        if (settings.swapWeightReps) {
-                                            // Сначала вес
-                                            if (s.weight != null && s.weight > 0) {
-                                                Row(verticalAlignment = Alignment.Bottom) {
-                                                    Text(
-                                                        text = Fmt.weight(s.weight) ?: "",
-                                                        fontSize = 20.sp,
-                                                        fontWeight = textWeight,
-                                                        color = weightTextColor
-                                                    )
-                                                    Spacer(Modifier.width(3.dp))
-                                                    Text(
-                                                        text = "кг",
-                                                        fontSize = 12.sp,
-                                                        fontWeight = FontWeight.SemiBold,
-                                                        color = repsTextColor,
-                                                        modifier = Modifier.padding(bottom = 0.5.dp)
-                                                    )
-                                                }
-
-                                                Spacer(Modifier.width(6.dp))
-
-                                                // Прямая линия на ВСЮ ВЫСОТУ карточки
-                                                Box(
-                                                    modifier = Modifier
-                                                        .width(1.dp)
-                                                        .fillMaxHeight()
-                                                        .background(Color.White.copy(alpha = 0.35f))
+                                        val weight = Fmt.weight(s.weight)?.takeIf { (s.weight ?: 0.0) > 0 }
+                                        val weightValue: @Composable () -> Unit = {
+                                            Row(verticalAlignment = Alignment.Bottom) {
+                                                MetricNumber(
+                                                    text = weight.orEmpty(),
+                                                    minDigits = 3,
+                                                    fontSize = 20.sp,
+                                                    fontWeight = textWeight,
+                                                    color = weightTextColor
                                                 )
-
-                                                Spacer(Modifier.width(2.dp))
-                                            }
-
-                                            // Затем повторения
-                                            Box(
-                                                modifier = Modifier
-                                                    .width(78.dp)
-                                                    .fillMaxHeight(),
-                                                contentAlignment = Alignment.CenterStart
-                                            ) {
-                                                Row(verticalAlignment = Alignment.Bottom) {
-                                                    Box(
-                                                        modifier = Modifier.width(36.dp),
-                                                        contentAlignment = Alignment.BottomStart
-                                                    ) {
-                                                        Text(
-                                                            text = "${s.reps}",
-                                                            fontSize = 19.sp,
-                                                            fontWeight = textWeight,
-                                                            color = repsTextColor
-                                                        )
-                                                    }
-                                                    Text(
-                                                        text = if (s.isTimeBased) "сек" else "повт.",
-                                                        fontSize = 12.sp,
-                                                        fontWeight = FontWeight.SemiBold,
-                                                        color = repsTextColor,
-                                                        modifier = Modifier.padding(bottom = 0.5.dp)
-                                                    )
-                                                }
-                                            }
-                                        } else {
-                                            // Сначала повторения (Стандартно)
-                                            Box(
-                                                modifier = Modifier
-                                                    .width(78.dp)
-                                                    .fillMaxHeight(),
-                                                contentAlignment = Alignment.CenterStart
-                                            ) {
-                                                Row(verticalAlignment = Alignment.Bottom) {
-                                                    Box(
-                                                        modifier = Modifier.width(36.dp),
-                                                        contentAlignment = Alignment.BottomStart
-                                                    ) {
-                                                        Text(
-                                                            text = "${s.reps}",
-                                                            fontSize = 19.sp,
-                                                            fontWeight = textWeight,
-                                                            color = repsTextColor
-                                                        )
-                                                    }
-                                                    Text(
-                                                        text = if (s.isTimeBased) "сек" else "повт.",
-                                                        fontSize = 12.sp,
-                                                        fontWeight = FontWeight.SemiBold,
-                                                        color = repsTextColor,
-                                                        modifier = Modifier.padding(bottom = 0.5.dp)
-                                                    )
-                                                }
-                                            }
-
-                                            Spacer(Modifier.width(2.dp))
-
-                                            // Прямая линия на ВСЮ ВЫСОТУ карточки вплотную
-                                            Box(
-                                                modifier = Modifier
-                                                    .width(1.dp)
-                                                    .fillMaxHeight()
-                                                    .background(Color.White.copy(alpha = 0.35f))
-                                            )
-
-                                            Spacer(Modifier.width(6.dp))
-
-                                            // Затем вес
-                                            if (s.weight != null && s.weight > 0) {
-                                                Row(verticalAlignment = Alignment.Bottom) {
-                                                    Text(
-                                                        text = Fmt.weight(s.weight) ?: "",
-                                                        fontSize = 20.sp,
-                                                        fontWeight = textWeight,
-                                                        color = weightTextColor
-                                                    )
-                                                    Spacer(Modifier.width(3.dp))
-                                                    Text(
-                                                        text = "кг",
-                                                        fontSize = 12.sp,
-                                                        fontWeight = FontWeight.SemiBold,
-                                                        color = repsTextColor,
-                                                        modifier = Modifier.padding(bottom = 0.5.dp)
-                                                    )
-                                                }
+                                                Spacer(Modifier.width(3.dp))
+                                                Text(
+                                                    text = "кг",
+                                                    fontSize = 12.sp,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = if (weight == null) Color.Transparent else repsTextColor,
+                                                    modifier = Modifier.padding(bottom = 0.5.dp)
+                                                )
                                             }
                                         }
+                                        val repsValue: @Composable () -> Unit = {
+                                            Row(verticalAlignment = Alignment.Bottom) {
+                                                MetricNumber(
+                                                    text = s.reps.toString(),
+                                                    minDigits = 2,
+                                                    fontSize = 19.sp,
+                                                    fontWeight = textWeight,
+                                                    color = repsTextColor
+                                                )
+                                                Spacer(Modifier.width(3.dp))
+                                                Text(
+                                                    text = if (s.isTimeBased) "сек" else "повт.",
+                                                    fontSize = 12.sp,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = repsTextColor,
+                                                    modifier = Modifier.padding(bottom = 0.5.dp)
+                                                )
+                                            }
+                                        }
+
+                                        if (settings.swapWeightReps) weightValue() else repsValue()
+                                        Box(
+                                            Modifier
+                                                .padding(horizontal = 6.dp)
+                                                .width(1.dp)
+                                                .fillMaxHeight()
+                                                .background(Color.White.copy(alpha = 0.35f))
+                                        )
+                                        if (settings.swapWeightReps) repsValue() else if (weight != null) weightValue()
                                     }
 
                                     if (editMode) {
                                         Icon(
                                             imageVector = Icons.Filled.Edit,
                                             contentDescription = "Изменить подход",
-                                            tint = Color(0xFFA6FF00),
+                                            tint = DenTrainPalette.Lime,
                                             modifier = Modifier.size(18.dp)
                                         )
                                     }
@@ -575,13 +496,12 @@ fun WorkoutDetailScreen(
                         onClick = {
                             Haptic.click(context)
                             vm.togglePin()
-                            hasChanges = true
                         },
                         modifier = Modifier
                             .weight(1f)
-                            .height(48.dp),
+                            .heightIn(min = 48.dp),
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = Color(0xFF242732),
+                            containerColor = DenTrainPalette.RaisedPanel,
                             contentColor = Color.White
                         ),
                         border = BorderStroke(1.dp, Color.White),
@@ -613,17 +533,17 @@ fun WorkoutDetailScreen(
                         },
                         modifier = Modifier
                             .weight(1.2f)
-                            .height(48.dp),
+                            .heightIn(min = 48.dp),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = Color(0xFF1E281E),
                             contentColor = Color.White
                         ),
-                        border = BorderStroke(1.5.dp, Color(0xFFA6FF00)),
+                        border = BorderStroke(1.5.dp, DenTrainPalette.Lime),
                         shape = RoundedCornerShape(12.dp),
                         contentPadding = PaddingValues(horizontal = 4.dp)
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Icon(Icons.Filled.ContentCopy, contentDescription = null, tint = Color(0xFFA6FF00), modifier = Modifier.size(16.dp))
+                            Icon(Icons.Filled.ContentCopy, contentDescription = null, tint = DenTrainPalette.Lime, modifier = Modifier.size(16.dp))
                             Text(
                                 text = "Повторить",
                                 fontWeight = FontWeight.ExtraBold,
@@ -642,9 +562,9 @@ fun WorkoutDetailScreen(
                         },
                         modifier = Modifier
                             .weight(1f)
-                            .height(48.dp),
+                            .heightIn(min = 48.dp),
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = Color(0xFF242732),
+                            containerColor = DenTrainPalette.RaisedPanel,
                             contentColor = Color.White
                         ),
                         border = BorderStroke(1.dp, Color.White),
@@ -668,47 +588,6 @@ fun WorkoutDetailScreen(
     }
 
     // Подтверждение при выходе: "Хотите применить изменения?"
-    if (showExitConfirm) {
-        AlertDialog(
-            onDismissRequest = { showExitConfirm = false },
-            containerColor = Color(0xFF1B1D25),
-            title = {
-                Text(
-                    text = "Хотите применить изменения?",
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 17.sp,
-                    color = Color.White
-                )
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        showExitConfirm = false
-                        onBack()
-                    },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Color(0xFF242732),
-                        contentColor = Color.White
-                    ),
-                    border = BorderStroke(1.dp, Color.White),
-                    shape = RoundedCornerShape(10.dp)
-                ) {
-                    Text("Да", fontWeight = FontWeight.Bold, color = Color.White)
-                }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = {
-                        showExitConfirm = false
-                        onBack()
-                    }
-                ) {
-                    Text("Нет", color = Color(0xFFA0A7B8), fontWeight = FontWeight.Medium)
-                }
-            }
-        )
-    }
-
     if (showDelete) {
         ConfirmDialog(
             title = "Удалить тренировку?",
@@ -718,18 +597,25 @@ fun WorkoutDetailScreen(
         )
     }
 
+    setToDelete?.let { set ->
+        ConfirmDialog(
+            title = "Удалить подход?",
+            text = "Результат этого подхода будет удалён из истории тренировки.",
+            onConfirm = { setToDelete = null; vm.deleteSet(set) },
+            onDismiss = { setToDelete = null }
+        )
+    }
+
     editingSet?.let { set ->
         SetEditDialog(
             set = set,
             onSave = { r, wt, isW ->
                 vm.updateSet(set, r, wt, isW)
                 editingSet = null
-                hasChanges = true
             },
             onDelete = {
-                vm.deleteSet(set)
+                setToDelete = set
                 editingSet = null
-                hasChanges = true
             },
             onDismiss = { editingSet = null }
         )

@@ -16,6 +16,7 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "1.0"
+        testInstrumentationRunner = "com.dentrain.data.DiaryTestRunner"
     }
 
     buildTypes {
@@ -39,6 +40,7 @@ android {
 }
 
 dependencies {
+    implementation("com.google.code.gson:gson:2.10.1")
     val composeBom = platform("androidx.compose:compose-bom:2024.09.00")
     implementation(composeBom)
     implementation("androidx.compose.ui:ui")
@@ -46,6 +48,7 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.compose.animation:animation")
+    implementation("com.airbnb.android:lottie-compose:6.5.2")
 
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.core:core-splashscreen:1.0.1")
@@ -74,5 +77,9 @@ dependencies {
     implementation("com.vanniktech:android-image-cropper:4.6.0")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
+}
+
+ksp {
+    arg("room.schemaLocation", file("schemas").path)
 }
 

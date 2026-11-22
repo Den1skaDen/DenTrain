@@ -1,5 +1,11 @@
 package com.dentrain.ui.auth
 
+import com.dentrain.util.UserFacingException
+import com.google.android.gms.auth.api.signin.GoogleSignInStatusCodes
+import com.google.android.gms.common.api.CommonStatusCodes
+import androidx.compose.runtime.saveable.rememberSaveable
+import com.dentrain.ui.components.ConfirmDialog
+import com.dentrain.util.userMessage
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
@@ -112,16 +118,21 @@ class AuthViewModel : ViewModel() {
 
     fun checkUserStatus(onSuccess: () -> Unit) {
         val user = auth.currentUser ?: return
+        if (!user.isEmailVerified) {
+            email = user.email.orEmpty()
+            step = AuthStep.EMAIL_VERIFICATION
+            return
+        }
         viewModelScope.launch {
             try {
-                val doc = db.collection("users").document(user.uid).get().await()
+                val doc = db.collection("profiles").document(user.uid).get().await()
                 if (doc.exists()) {
                     onSuccess()
                 } else {
                     step = AuthStep.PROFILE_SETUP
                 }
-            } catch (_: Exception) {
-                onSuccess()
+            } catch (e: Exception) {
+                error = e.userMessage("Не удалось загрузить профиль.")
             }
         }
     }
@@ -150,25 +161,21 @@ class AuthViewModel : ViewModel() {
                     val result = auth.createUserWithEmailAndPassword(email, password).await()
                     val user = result.user
                     if (user != null) {
-                        try {
-                            user.sendEmailVerification().await()
-                        } catch (_: Exception) {}
                         step = AuthStep.EMAIL_VERIFICATION
-                        successMsg = "Ссылка для подтверждения отправлена на почту $email"
+                        sendVerificationEmail()
                     }
                 } else {
                     val result = auth.signInWithEmailAndPassword(email, password).await()
                     val user = result.user
                     if (user != null && !user.isEmailVerified) {
-                        user.sendEmailVerification()
                         step = AuthStep.EMAIL_VERIFICATION
-                        error = "Email ещё не подтверждён! Перейдите по ссылке из письма на вашей почте."
+                        sendVerificationEmail()
                     } else {
                         checkUserStatus(onSuccess)
                     }
                 }
             } catch (e: Exception) {
-                error = e.localizedMessage ?: "Ошибка авторизации"
+                error = e.userMessage("Ошибка авторизации.")
             } finally {
                 isLoading = false
             }
@@ -183,43 +190,69 @@ class AuthViewModel : ViewModel() {
                 auth.currentUser?.reload()?.await()
                 val user = auth.currentUser
                 if (user != null && user.isEmailVerified) {
-                    step = AuthStep.PROFILE_SETUP
+                    user.getIdToken(true).await()
+                    checkUserStatus(onSuccess)
                 } else {
                     error = "Ссылка подтверждения пока не нажата. Откройте письмо на почте $email и перейдите по ссылке!"
                 }
             } catch (e: Exception) {
-                error = e.localizedMessage ?: "Ошибка проверки почты"
+                error = e.userMessage("Ошибка проверки почты.")
             } finally {
                 isLoading = false
             }
         }
     }
 
+    private suspend fun sendVerificationEmail() {
+        try {
+            val user = auth.currentUser ?: throw UserFacingException("Войдите в аккаунт заново.")
+            user.sendEmailVerification().await()
+            successMsg = "Письмо для подтверждения отправлено на почту $email."
+        } catch (failure: Exception) {
+            error = failure.userMessage("Не удалось отправить письмо для подтверждения.")
+        }
+    }
+
     fun resendVerificationEmail() {
+        if (isLoading) return
+        isLoading = true
+        error = null
+        successMsg = null
         viewModelScope.launch {
             try {
-                auth.currentUser?.sendEmailVerification()?.await()
-                successMsg = "Новое письмо с ссылкой подтверждения отправлено на почту!"
-            } catch (e: Exception) {
-                error = "Не удалось отправить повторно: ${e.localizedMessage}"
+                sendVerificationEmail()
+            } finally {
+                isLoading = false
             }
         }
     }
 
     fun cancelRegistration() {
+        if (isLoading) return
+        isLoading = true
+        error = null
+        successMsg = null
         viewModelScope.launch {
             try {
-                auth.currentUser?.delete()?.await()
-            } catch (_: Exception) {}
-            auth.signOut()
-            step = AuthStep.AUTH
-            email = ""
-            password = ""
-            confirmPassword = ""
-            inputCode = ""
-            generatedCode = ""
-            error = null
-            successMsg = null
+                auth.currentUser?.let { user ->
+                    user.reload().await()
+                    if (user.isEmailVerified) {
+                        throw UserFacingException("Почта уже подтверждена. Нажмите «Я подтвердил почту», чтобы продолжить.")
+                    }
+                    user.delete().await()
+                }
+                auth.signOut()
+                step = AuthStep.AUTH
+                email = ""
+                password = ""
+                confirmPassword = ""
+                inputCode = ""
+                generatedCode = ""
+            } catch (failure: Exception) {
+                error = failure.userMessage("Не удалось отменить регистрацию.")
+            } finally {
+                isLoading = false
+            }
         }
     }
 
@@ -243,17 +276,20 @@ class AuthViewModel : ViewModel() {
                     )
                 } else {
                     hashMapOf(
-                        "nickname" to nickname.trim().ifBlank { email.substringBefore("@") },
+                        "nickname" to nickname.trim().ifBlank { email.substringBefore("@").ifBlank { "Пользователь" } },
                         "username" to username.trim().filter { char -> char.isLetterOrDigit() || char == '_' },
                         "dobEpochDay" to dobEpochDay,
                         "avatarBase64" to "",
                         "role" to "athlete"
                     )
                 }
-                db.collection("users").document(uid).set(data).await()
+                val batch = db.batch()
+                batch.set(db.collection("profiles").document(uid), data)
+                auth.currentUser?.email?.let { batch.set(db.collection("accounts").document(uid), mapOf("email" to it)) }
+                batch.commit().await()
                 onSuccess()
             } catch (e: Exception) {
-                error = "Ошибка сохранения профиля: ${e.localizedMessage}"
+                error = e.userMessage("Ошибка сохранения профиля.")
             } finally {
                 isLoading = false
             }
@@ -269,7 +305,7 @@ class AuthViewModel : ViewModel() {
                 auth.signInWithCredential(credential).await()
                 checkUserStatus(onSuccess)
             } catch (e: Exception) {
-                error = e.localizedMessage ?: "Ошибка авторизации Google"
+                error = e.userMessage("Ошибка авторизации Google.")
             } finally {
                 isLoading = false
             }
@@ -278,9 +314,24 @@ class AuthViewModel : ViewModel() {
 }
 
 @Composable
-fun AuthScreen(onAuthSuccess: () -> Unit) {
+fun AuthScreen(logoModifier: Modifier = Modifier, onAuthSuccess: () -> Unit) {
     val vm = appViewModel { AuthViewModel() }
     val context = LocalContext.current
+
+    var showCancelRegistration by rememberSaveable { mutableStateOf(false) }
+    if (showCancelRegistration && vm.step == AuthStep.EMAIL_VERIFICATION) {
+        ConfirmDialog(
+            title = "Отменить регистрацию?",
+            text = "Неподтверждённый аккаунт будет удалён. Вы сможете зарегистрироваться снова.",
+            confirmText = "Отменить регистрацию",
+            dismissText = "Продолжить",
+            onConfirm = {
+                showCancelRegistration = false
+                vm.cancelRegistration()
+            },
+            onDismiss = { showCancelRegistration = false }
+        )
+    }
 
     val googleSignInLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
@@ -291,10 +342,14 @@ fun AuthScreen(onAuthSuccess: () -> Unit) {
             account?.idToken?.let { token ->
                 vm.signInWithGoogleCredential(token, onAuthSuccess)
             } ?: run {
-                vm.error = "Не удалось получить токен Google"
+                vm.error = "Google не подтвердил вход. Попробуйте войти ещё раз."
             }
         } catch (e: ApiException) {
-            vm.error = "Ошибка Google: ${e.statusCode}"
+            vm.error = when (e.statusCode) {
+                CommonStatusCodes.CANCELED, GoogleSignInStatusCodes.SIGN_IN_CANCELLED -> null
+                CommonStatusCodes.NETWORK_ERROR -> "Не удалось войти через Google. Проверьте подключение к интернету."
+                else -> "Не удалось войти через Google. Повторите попытку или войдите по электронной почте."
+            }
         }
     }
 
@@ -333,7 +388,8 @@ fun AuthScreen(onAuthSuccess: () -> Unit) {
                 onLoginClick = {
                     vm.authenticate(onAuthSuccess)
                 },
-                onGoogleClick = { launchGoogleSignIn() }
+                onGoogleClick = { launchGoogleSignIn() },
+                logoModifier = logoModifier
             )
         }
 
@@ -434,10 +490,11 @@ fun AuthScreen(onAuthSuccess: () -> Unit) {
                                 Spacer(Modifier.height(4.dp))
 
                                 TextButton(
-                                    onClick = { vm.cancelRegistration() },
+                                    onClick = { showCancelRegistration = true },
+                                    enabled = !vm.isLoading,
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
-                                    Text("Отмена / Использовать другой email", color = MaterialTheme.colorScheme.error)
+                                    Text("Отменить регистрацию", color = MaterialTheme.colorScheme.error)
                                 }
                             }
                         }

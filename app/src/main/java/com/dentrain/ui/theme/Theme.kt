@@ -21,10 +21,25 @@ class AccentGradient(val start: Color, val end: Color) {
     val brush: Brush get() = Brush.linearGradient(listOf(start, end))
 }
 
-val LocalGradient = staticCompositionLocalOf { AccentGradient(Color(0xFFBFFF00), Color(0xFFBFFF00)) } // Neo-green
+private val primary = DenTrainPalette.NeonGreen
+private val defaultGradient = AccentGradient(primary, primary)
+
+val LocalGradient = staticCompositionLocalOf { defaultGradient }
 val LocalGlassTheme = staticCompositionLocalOf { true }
 val LocalSplashActive = staticCompositionLocalOf { false }
 val LocalHeaderLogoVisible = staticCompositionLocalOf { false }
+
+private val colorScheme = darkColorScheme(
+    primary = primary, onPrimary = Color.Black,
+    primaryContainer = primary.copy(alpha = 0.20f), onPrimaryContainer = primary,
+    background = Color(0xFF0D0F13), onBackground = Color(0xFFF0F4F9),
+    surface = Color(0xFF1A1D24), onSurface = Color(0xFFF0F4F9),
+    surfaceVariant = Color(0xFF222938), onSurfaceVariant = Color(0xFFC0C9D6),
+    outline = Color(0x40FFFFFF), outlineVariant = Color(0x25FFFFFF),
+    surfaceContainer = Color(0xFF1A1D24), surfaceContainerHigh = Color(0xFF252D3E),
+    surfaceContainerHighest = Color(0xFF2C3549), surfaceContainerLow = Color(0xFF12151A),
+    error = Color(0xFFFF6B66)
+)
 
 @Composable
 fun DenTrainTheme(
@@ -33,26 +48,10 @@ fun DenTrainTheme(
     glass: Boolean = true,
     content: @Composable () -> Unit
 ) {
-    val primary = Color(0xFFBFFF00) // Neo green
-
-    val scheme = darkColorScheme(
-        primary = primary, onPrimary = Color.Black,
-        primaryContainer = primary.copy(alpha = 0.20f), onPrimaryContainer = primary,
-        background = Color(0xFF0D0F13), onBackground = Color(0xFFF0F4F9),
-        surface = Color(0xFF1A1D24), onSurface = Color(0xFFF0F4F9),
-        surfaceVariant = Color(0xFF222938), onSurfaceVariant = Color(0xFFC0C9D6),
-        outline = Color(0x40FFFFFF), outlineVariant = Color(0x25FFFFFF),
-        surfaceContainer = Color(0xFF1A1D24), surfaceContainerHigh = Color(0xFF252D3E),
-        surfaceContainerHighest = Color(0xFF2C3549), surfaceContainerLow = Color(0xFF12151A),
-        error = Color(0xFFFF6B66)
-    )
-    
-    val gradient = AccentGradient(primary, primary)
-
     CompositionLocalProvider(
-        LocalGradient provides gradient,
+        LocalGradient provides defaultGradient,
         LocalGlassTheme provides glass
     ) {
-        MaterialTheme(colorScheme = scheme, content = content)
+        MaterialTheme(colorScheme = colorScheme, content = content)
     }
 }

@@ -1,5 +1,16 @@
 package com.dentrain.ui.workout
 
+import kotlinx.coroutines.CancellationException
+import com.dentrain.util.UserFacingException
+import com.dentrain.ui.components.launchUserAction
+import com.dentrain.ui.components.OperationErrorDialog
+import androidx.compose.runtime.saveable.rememberSaveable
+import com.dentrain.ui.components.ErrorText
+import com.dentrain.ui.components.DiscardChangesDialog
+import com.dentrain.ui.components.ConfirmDialog
+import androidx.activity.compose.BackHandler
+import com.dentrain.ui.components.EditorTextField
+import com.dentrain.ui.theme.DenTrainPalette
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.tween
@@ -26,6 +37,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -42,25 +54,19 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
-import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DatePicker
-import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -90,6 +96,8 @@ import com.dentrain.data.SettingsEntity
 import com.dentrain.data.WorkoutDraft
 import com.dentrain.data.WorkoutRepository
 import com.dentrain.ui.components.BorderedBackButton
+import com.dentrain.ui.components.WorkoutDateSelector
+import com.dentrain.ui.components.workoutFieldColors
 import com.dentrain.ui.components.appViewModel
 import com.dentrain.util.Fmt
 import kotlinx.coroutines.delay
@@ -146,17 +154,49 @@ class EditorViewModel(private val workoutId: Long, private val repo: WorkoutRepo
     var dayOfWeek by mutableIntStateOf(LocalDate.now().dayOfWeek.value)
     var error by mutableStateOf<String?>(null)
     var loaded by mutableStateOf(workoutId == 0L)
+    var loadFailed by mutableStateOf(false)
+        private set
     val exercises = mutableStateListOf<ExerciseForm>()
     val recentExerciseNames = repo.recentExerciseNames.stateIn(viewModelScope, SharingStarted.Lazily, emptyList<String>())
     val settings = repo.settings.stateIn(viewModelScope, SharingStarted.Lazily, SettingsEntity())
+    var operationError by mutableStateOf<String?>(null)
+
+    private fun perform(fallback: String, action: suspend () -> Unit) {
+        launchUserAction(fallback, { operationError = it }, action)
+    }
+
     private var nextUid = 1L
+    private data class FormFields(
+        val title: String,
+        val description: String,
+        val epochDay: Long,
+        val dayOfWeek: Int,
+        val exercises: List<List<String>>
+    )
+
+    private var originalFields: FormFields? = null
+
+    private fun formFields() = FormFields(
+        title, description, epochDay, dayOfWeek,
+        exercises.map { listOf(it.uid.toString(), it.name, it.sets, it.reps, it.weight) }
+    )
+
+    val hasChanges: Boolean get() = loaded && formFields() != originalFields
 
     init {
         if (workoutId == 0L) {
             exercises.add(ExerciseForm(nextUid++))
+            originalFields = formFields()
         } else {
-            viewModelScope.launch {
-                repo.getWorkout(workoutId)?.let { w ->
+            perform("Не удалось открыть тренировку.") {
+                val workout = try {
+                    repo.getWorkout(workoutId) ?: throw UserFacingException("Тренировка больше недоступна.")
+                } catch (failure: Exception) {
+                    if (failure is CancellationException) throw failure
+                    loadFailed = true
+                    throw failure
+                }
+                workout.let { w ->
                     title = w.workout.title
                     description = w.workout.description
                     epochDay = w.workout.dateEpochDay
@@ -171,6 +211,7 @@ class EditorViewModel(private val workoutId: Long, private val repo: WorkoutRepo
                         )
                     }
                 }
+                originalFields = formFields()
                 loaded = true
             }
         }
@@ -241,6 +282,11 @@ class EditorViewModel(private val workoutId: Long, private val repo: WorkoutRepo
                 onErrorFound(i + 2, "sets", e.uid)
                 return
             }
+            val weight = Fmt.parseWeight(e.weight)
+            if (e.weight.isNotBlank() && (weight == null || !weight.isFinite() || weight < 0)) {
+                error = "Упражнение $n: укажите вес числом от 0 или оставьте поле пустым."
+                return
+            }
         }
 
         error = null
@@ -249,7 +295,7 @@ class EditorViewModel(private val workoutId: Long, private val repo: WorkoutRepo
             val weight = if (e.weight.isBlank()) null else Fmt.parseWeight(e.weight)
             drafts.add(ExerciseDraft(e.id, e.name.trim(), e.sets.trim().toInt(), e.reps.trim().ifBlank { null }, weight))
         }
-        viewModelScope.launch {
+        perform("Не удалось сохранить тренировку.") {
             repo.saveWorkout(WorkoutDraft(workoutId, title.trim(), epochDay, dayOfWeek, description.trim(), drafts))
             onDone()
         }
@@ -257,7 +303,7 @@ class EditorViewModel(private val workoutId: Long, private val repo: WorkoutRepo
 
     fun delete(onDone: () -> Unit) {
         if (workoutId != 0L) {
-            viewModelScope.launch {
+            perform("Не удалось удалить тренировку.") {
                 repo.deleteWorkout(workoutId)
                 onDone()
             }
@@ -274,8 +320,8 @@ private fun EditorCard(
         modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
-            .background(Color(0xFF1B1D25))
-            .border(BorderStroke(1.dp, Color(0xFF282B36)), RoundedCornerShape(16.dp))
+            .background(DenTrainPalette.Panel)
+            .border(BorderStroke(1.dp, DenTrainPalette.SubtleBorder), RoundedCornerShape(16.dp))
             .padding(16.dp)
     ) {
         Column(
@@ -285,25 +331,33 @@ private fun EditorCard(
     }
 }
 
-@Composable
-private fun customTfColors(isFilled: Boolean, hasError: Boolean = false) = OutlinedTextFieldDefaults.colors(
-    focusedContainerColor = Color(0xFF1B1D25),
-    unfocusedContainerColor = Color(0xFF1B1D25),
-    focusedBorderColor = if (hasError) Color(0xFFFF5252) else Color(0xFFA6FF00),
-    unfocusedBorderColor = if (hasError) Color(0xFFFF5252) else if (isFilled) Color.White else Color(0xFF333644),
-    focusedLabelColor = if (hasError) Color(0xFFFF5252) else Color(0xFFA6FF00),
-    unfocusedLabelColor = if (hasError) Color(0xFFFF5252) else if (isFilled) Color(0xFFE0E0E6) else Color(0xFFA0A7B8),
-    focusedTextColor = Color.White,
-    unfocusedTextColor = Color.White,
-    cursorColor = if (hasError) Color(0xFFFF5252) else Color(0xFFA6FF00)
-)
-
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun WorkoutEditorScreen(workoutId: Long, onBack: () -> Unit) {
     val vm = appViewModel(key = "editor$workoutId") { EditorViewModel(workoutId, it.repository) }
+    OperationErrorDialog(vm.operationError) { vm.operationError = null }
     val recentExerciseNames by vm.recentExerciseNames.collectAsStateWithLifecycle()
     val settings by vm.settings.collectAsStateWithLifecycle()
+
+    var showDelete by rememberSaveable { mutableStateOf(false) }
+    var showDiscard by rememberSaveable { mutableStateOf(false) }
+    val handleBack = { if (vm.hasChanges) showDiscard = true else onBack() }
+    BackHandler(onBack = handleBack)
+
+    if (showDiscard) {
+        DiscardChangesDialog(
+            onDiscard = { showDiscard = false; onBack() },
+            onDismiss = { showDiscard = false }
+        )
+    }
+    if (showDelete) {
+        ConfirmDialog(
+            title = "Удалить тренировку?",
+            text = "Тренировка и записанные подходы будут удалены. Восстановить их не получится.",
+            onConfirm = { showDelete = false; vm.delete(onBack) },
+            onDismiss = { showDelete = false }
+        )
+    }
 
     val focusManager = LocalFocusManager.current
     val isImeVisible = WindowInsets.isImeVisible
@@ -335,12 +389,12 @@ fun WorkoutEditorScreen(workoutId: Long, onBack: () -> Unit) {
                     )
                 },
                 navigationIcon = {
-                    BorderedBackButton(onClick = onBack)
+                    BorderedBackButton(onClick = handleBack)
                 },
                 actions = {
                     if (workoutId != 0L) {
-                        IconButton(onClick = { vm.delete(onBack) }) {
-                            Icon(Icons.Filled.Delete, "Удалить", tint = Color(0xFFFF5252))
+                        IconButton(onClick = { showDelete = true }, enabled = vm.loaded) {
+                            Icon(Icons.Filled.Delete, "Удалить", tint = DenTrainPalette.Error)
                         }
                     }
                 },
@@ -348,9 +402,13 @@ fun WorkoutEditorScreen(workoutId: Long, onBack: () -> Unit) {
             )
         }
     ) { pad ->
+        if (vm.loadFailed) {
+            ErrorText("Не удалось открыть тренировку.", Modifier.padding(pad).padding(16.dp))
+            return@Scaffold
+        }
         if (!vm.loaded) {
             Box(Modifier.padding(pad).fillMaxSize(), Alignment.Center) {
-                CircularProgressIndicator(color = Color(0xFFA6FF00))
+                CircularProgressIndicator(color = DenTrainPalette.Lime)
             }
             return@Scaffold
         }
@@ -379,100 +437,30 @@ fun WorkoutEditorScreen(workoutId: Long, onBack: () -> Unit) {
                     }
                     val dayName = remember(vm.dayOfWeek) { Fmt.dayName(vm.dayOfWeek) }
 
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(top = 2.dp, bottom = 12.dp)
-                    ) {
-                        Text(
-                            text = dayName,
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color(0xFFA6FF00)
-                        )
-                        Text(
-                            text = ",",
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White
-                        )
-                        Spacer(Modifier.width(6.dp))
-
-                        var showDatePicker by remember { mutableStateOf(false) }
-
-                        Box(
-                            modifier = Modifier
-                                .clip(CircleShape)
-                                .background(Color(0xFF242732))
-                                .border(BorderStroke(1.dp, Color(0xFF333644)), CircleShape)
-                                .clickable { showDatePicker = true }
-                                .padding(horizontal = 10.dp, vertical = 4.dp)
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
-                            ) {
-                                Icon(
-                                    Icons.Filled.CalendarMonth,
-                                    contentDescription = "Выбрать дату",
-                                    tint = Color(0xFFA6FF00),
-                                    modifier = Modifier.size(13.dp)
-                                )
-                                Text(
-                                    text = dateText,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    color = Color.White
-                                )
-                            }
-                        }
-
-                        if (showDatePicker) {
-                            val datePickerState = rememberDatePickerState(initialSelectedDateMillis = vm.epochDay * 86_400_000L)
-                            DatePickerDialog(
-                                onDismissRequest = { showDatePicker = false },
-                                confirmButton = {
-                                    TextButton(onClick = {
-                                        datePickerState.selectedDateMillis?.let { vm.changeDate(Math.floorDiv(it, 86_400_000L)) }
-                                        showDatePicker = false
-                                    }) { Text("OK", color = Color(0xFFA6FF00)) }
-                                },
-                                dismissButton = {
-                                    TextButton(onClick = { showDatePicker = false }) {
-                                        Text("Отмена", color = Color(0xFFA0A7B8))
-                                    }
-                                }
-                            ) {
-                                DatePicker(state = datePickerState)
-                            }
-                        }
-                    }
+                    WorkoutDateSelector(dayName, dateText, vm.epochDay, vm::changeDate)
 
                     if (vm.titleError != null) {
                         Text(
                             text = vm.titleError!!,
-                            color = Color(0xFFFF5252),
+                            color = DenTrainPalette.Error,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier.padding(bottom = 4.dp)
                         )
                     }
 
-                    OutlinedTextField(
+                    EditorTextField(
                         value = vm.title,
                         onValueChange = vm::onTitleChange,
-                        label = { Text("Название (напр., Грудь и трицепс)") },
-                        singleLine = true,
+                        label = "Название (напр., Грудь и трицепс)",
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .focusRequester(titleFocusRequester),
-                        colors = customTfColors(isFilled = vm.title.isNotBlank(), hasError = vm.titleError != null),
-                        shape = tfShape
+                        modifier = Modifier.focusRequester(titleFocusRequester),
+                        hasError = vm.titleError != null
                     )
 
                     Spacer(Modifier.height(12.dp))
 
-                    Text("День недели", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = Color(0xFFA0A7B8))
+                    Text("День недели", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = DenTrainPalette.MutedText)
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -486,11 +474,11 @@ fun WorkoutEditorScreen(workoutId: Long, onBack: () -> Unit) {
                                     .weight(1f)
                                     .height(40.dp)
                                     .clip(RoundedCornerShape(10.dp))
-                                    .background(Color(0xFF242732))
+                                    .background(DenTrainPalette.RaisedPanel)
                                     .border(
                                         BorderStroke(
                                             if (selected) 1.5.dp else 1.dp,
-                                            if (selected) Color(0xFFA6FF00) else Color(0xFF333644)
+                                            if (selected) DenTrainPalette.Lime else DenTrainPalette.Border
                                         ),
                                         RoundedCornerShape(10.dp)
                                     )
@@ -501,7 +489,7 @@ fun WorkoutEditorScreen(workoutId: Long, onBack: () -> Unit) {
                                     text = name,
                                     fontSize = 14.sp,
                                     fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                                    color = if (selected) Color.White else Color(0xFFA0A7B8)
+                                    color = if (selected) Color.White else DenTrainPalette.MutedText
                                 )
                             }
                         }
@@ -509,15 +497,12 @@ fun WorkoutEditorScreen(workoutId: Long, onBack: () -> Unit) {
 
                     Spacer(Modifier.height(12.dp))
 
-                    OutlinedTextField(
+                    EditorTextField(
                         value = vm.description,
                         onValueChange = { vm.description = it.take(300) },
-                        label = { Text("Описание (необязательно)") },
-                        modifier = Modifier.fillMaxWidth(),
-                        minLines = 2,
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                        colors = customTfColors(isFilled = vm.description.isNotBlank()),
-                        shape = tfShape
+                        label = "Описание (необязательно)",
+                        singleLine = false,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done)
                     )
                 }
             }
@@ -581,7 +566,7 @@ fun WorkoutEditorScreen(workoutId: Long, onBack: () -> Unit) {
                                 Icon(
                                     Icons.Filled.Delete,
                                     "Удалить",
-                                    tint = Color(0xFFFF5252),
+                                    tint = DenTrainPalette.Error,
                                     modifier = Modifier.size(20.dp)
                                 )
                             }
@@ -593,7 +578,7 @@ fun WorkoutEditorScreen(workoutId: Long, onBack: () -> Unit) {
                     if (e.nameError != null) {
                         Text(
                             text = e.nameError!!,
-                            color = Color(0xFFFF5252),
+                            color = DenTrainPalette.Error,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier.padding(bottom = 4.dp)
@@ -612,7 +597,7 @@ fun WorkoutEditorScreen(workoutId: Long, onBack: () -> Unit) {
                             .fillMaxWidth()
                             .focusRequester(nameFocus)
                             .onFocusChanged { isNameFocused = it.isFocused },
-                        colors = customTfColors(isFilled = e.name.isNotBlank(), hasError = e.nameError != null),
+                        colors = workoutFieldColors(isFilled = e.name.isNotBlank(), hasError = e.nameError != null),
                         shape = tfShape
                     )
 
@@ -644,11 +629,11 @@ fun WorkoutEditorScreen(workoutId: Long, onBack: () -> Unit) {
                                     modifier = Modifier
                                         .animateItem()
                                         .clip(RoundedCornerShape(10.dp))
-                                        .background(if (isSel) Color(0xFF2A2415) else Color(0xFF242732))
+                                        .background(if (isSel) Color(0xFF2A2415) else DenTrainPalette.RaisedPanel)
                                         .border(
                                             BorderStroke(
                                                 if (isSel) 1.5.dp else 1.dp,
-                                                if (isSel) Color(0xFFFFB300) else Color(0xFF333644)
+                                                if (isSel) Color(0xFFFFB300) else DenTrainPalette.Border
                                             ),
                                             RoundedCornerShape(10.dp)
                                         )
@@ -659,7 +644,7 @@ fun WorkoutEditorScreen(workoutId: Long, onBack: () -> Unit) {
                                         text = item,
                                         fontSize = 12.sp,
                                         fontWeight = if (isSel) FontWeight.Bold else FontWeight.Medium,
-                                        color = if (isSel) Color(0xFFFFD54F) else Color(0xFFA0A7B8)
+                                        color = if (isSel) Color(0xFFFFD54F) else DenTrainPalette.MutedText
                                     )
                                 }
                             }
@@ -671,7 +656,7 @@ fun WorkoutEditorScreen(workoutId: Long, onBack: () -> Unit) {
                     if (e.setsError != null) {
                         Text(
                             text = e.setsError!!,
-                            color = Color(0xFFFF5252),
+                            color = DenTrainPalette.Error,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier.padding(bottom = 4.dp)
@@ -688,7 +673,7 @@ fun WorkoutEditorScreen(workoutId: Long, onBack: () -> Unit) {
                             modifier = Modifier
                                 .weight(1f)
                                 .focusRequester(setsFocus),
-                            colors = customTfColors(isFilled = e.sets.isNotBlank(), hasError = e.setsError != null),
+                            colors = workoutFieldColors(isFilled = e.sets.isNotBlank(), hasError = e.setsError != null),
                             shape = tfShape
                         )
 
@@ -701,7 +686,7 @@ fun WorkoutEditorScreen(workoutId: Long, onBack: () -> Unit) {
                                 singleLine = true,
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal, imeAction = ImeAction.Next),
                                 modifier = Modifier.weight(1f),
-                                colors = customTfColors(isFilled = e.weight.isNotBlank()),
+                                colors = workoutFieldColors(isFilled = e.weight.isNotBlank()),
                                 shape = tfShape
                             )
                             // Затем повторы
@@ -712,7 +697,7 @@ fun WorkoutEditorScreen(workoutId: Long, onBack: () -> Unit) {
                                 singleLine = true,
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
                                 modifier = Modifier.weight(1f),
-                                colors = customTfColors(isFilled = e.reps.isNotBlank()),
+                                colors = workoutFieldColors(isFilled = e.reps.isNotBlank()),
                                 shape = tfShape
                             )
                         } else {
@@ -724,7 +709,7 @@ fun WorkoutEditorScreen(workoutId: Long, onBack: () -> Unit) {
                                 singleLine = true,
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Next),
                                 modifier = Modifier.weight(1f),
-                                colors = customTfColors(isFilled = e.reps.isNotBlank()),
+                                colors = workoutFieldColors(isFilled = e.reps.isNotBlank()),
                                 shape = tfShape
                             )
                             OutlinedTextField(
@@ -734,7 +719,7 @@ fun WorkoutEditorScreen(workoutId: Long, onBack: () -> Unit) {
                                 singleLine = true,
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal, imeAction = ImeAction.Done),
                                 modifier = Modifier.weight(1f),
-                                colors = customTfColors(isFilled = e.weight.isNotBlank()),
+                                colors = workoutFieldColors(isFilled = e.weight.isNotBlank()),
                                 shape = tfShape
                             )
                         }
@@ -747,10 +732,10 @@ fun WorkoutEditorScreen(workoutId: Long, onBack: () -> Unit) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(54.dp)
+                        .heightIn(min = 54.dp)
                         .clip(RoundedCornerShape(16.dp))
-                        .background(Color(0xFF1B1D25))
-                        .border(BorderStroke(1.dp, Color(0xFF282B36)), RoundedCornerShape(16.dp))
+                        .background(DenTrainPalette.Panel)
+                        .border(BorderStroke(1.dp, DenTrainPalette.SubtleBorder), RoundedCornerShape(16.dp))
                         .clickable { vm.addExercise() },
                     contentAlignment = Alignment.Center
                 ) {
@@ -758,13 +743,13 @@ fun WorkoutEditorScreen(workoutId: Long, onBack: () -> Unit) {
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.Center
                     ) {
-                        Icon(Icons.Filled.Add, contentDescription = null, tint = Color(0xFFA6FF00))
+                        Icon(Icons.Filled.Add, contentDescription = null, tint = DenTrainPalette.Lime)
                         Spacer(Modifier.width(8.dp))
                         Text(
                             "Добавить упражнение",
                             fontWeight = FontWeight.Bold,
                             fontSize = 15.sp,
-                            color = Color(0xFFA6FF00)
+                            color = DenTrainPalette.Lime
                         )
                     }
                 }
@@ -772,6 +757,7 @@ fun WorkoutEditorScreen(workoutId: Long, onBack: () -> Unit) {
 
             // Кнопка сохранить
             item {
+                ErrorText(vm.error, Modifier.padding(bottom = 8.dp))
                 Button(
                     onClick = {
                         vm.validateAndSave(
@@ -788,10 +774,10 @@ fun WorkoutEditorScreen(workoutId: Long, onBack: () -> Unit) {
                             }
                         )
                     },
-                    modifier = Modifier.fillMaxWidth().height(54.dp),
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 54.dp),
                     shape = RoundedCornerShape(16.dp),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = Color(0xFFA6FF00),
+                        containerColor = DenTrainPalette.Lime,
                         contentColor = Color.Black
                     )
                 ) {

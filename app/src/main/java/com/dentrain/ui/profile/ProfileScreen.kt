@@ -1,8 +1,9 @@
 package com.dentrain.ui.profile
 
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.util.Base64
+import com.dentrain.ui.components.launchUserAction
+import com.dentrain.ui.components.ConfirmDialog
+import com.dentrain.util.userMessage
+import com.dentrain.ui.theme.DenTrainPalette
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -33,7 +34,6 @@ import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Sports
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -64,7 +64,6 @@ import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Sports
-import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.HorizontalDivider
@@ -99,25 +98,28 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.dentrain.R
 import com.dentrain.data.AdminUserModel
-import com.dentrain.data.AssignedExerciseModel
 import com.dentrain.data.AssignedWorkoutModel
 import com.dentrain.data.ClubModel
+import com.dentrain.data.WorkoutDelivery
+import com.dentrain.data.TrainerRequests
+import com.dentrain.data.TrainerRequestModel
+import com.dentrain.data.activeTrainerRequest
+import com.google.firebase.firestore.ListenerRegistration
 import com.dentrain.ui.admin.UserListItem
-import com.dentrain.ui.components.DateField
 import com.dentrain.ui.components.ErrorText
 import com.dentrain.ui.components.ScreenHeader
 import com.dentrain.ui.components.SectionTitle
+import com.dentrain.ui.components.AssignedWorkoutDetailPanel
 import com.dentrain.ui.components.UserProfilePanel
 import com.dentrain.ui.components.ZCard
 import com.dentrain.ui.components.appViewModel
+import com.dentrain.ui.components.rememberAvatarBitmap
 import com.dentrain.util.Fmt
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
-import java.io.ByteArrayOutputStream
 import java.time.LocalDate
-import java.time.format.DateTimeFormatter
 
 data class UserProfile(
     val nickname: String = "",
@@ -125,8 +127,6 @@ data class UserProfile(
     val dobEpochDay: Long = LocalDate.now().toEpochDay(),
     val avatarUrl: String = "",
     val role: String = "athlete", // "admin", "trainer", "athlete"
-    val heightCm: Int? = null,
-    val weightKg: Double? = null,
     val gender: String = "male", // "male" или "female"
     val clubId: String? = null,
     val clubName: String? = null,
@@ -183,15 +183,17 @@ class ProfileViewModel(private val repo: WorkoutRepository? = null) : ViewModel(
     }
 
     private fun updateSettings(change: (SettingsEntity) -> SettingsEntity) {
-        viewModelScope.launch { repo?.updateSettings(change) }
+        launchUserAction("Не удалось сохранить настройки напоминаний.", { error = it }) {
+            repo?.updateSettings(change)
+        }
     }
 
     var profile by mutableStateOf(UserProfile())
-    var availableClubs by mutableStateOf<List<ClubModel>>(emptyList())
-    var availableTrainers by mutableStateOf<List<AdminUserModel>>(emptyList())
     var clubMembers by mutableStateOf<List<AdminUserModel>>(emptyList())
     var currentClubDetails by mutableStateOf<ClubModel?>(null)
-    var pendingTrainerRequestName by mutableStateOf<String?>(null)
+    var pendingTrainerRequests by mutableStateOf<List<TrainerRequestModel>>(emptyList())
+    private var profileListener: ListenerRegistration? = null
+    private var requestListener: ListenerRegistration? = null
 
     var userWorkouts by mutableStateOf<List<AssignedWorkoutModel>>(emptyList())
     var isLoadingWorkouts by mutableStateOf(false)
@@ -200,6 +202,9 @@ class ProfileViewModel(private val repo: WorkoutRepository? = null) : ViewModel(
     var isSaving by mutableStateOf(false)
     var error by mutableStateOf<String?>(null)
     var successMsg by mutableStateOf<String?>(null)
+    var sentRequestMessage by mutableStateOf<String?>(null)
+    var trainerRequestError by mutableStateOf<String?>(null)
+
 
     init {
         loadProfile()
@@ -207,77 +212,13 @@ class ProfileViewModel(private val repo: WorkoutRepository? = null) : ViewModel(
 
     fun loadUserWorkouts(userUid: String) {
         isLoadingWorkouts = true
+        userWorkouts = emptyList()
         viewModelScope.launch {
             try {
-                val assignedSnap = db.collection("assigned_workouts")
-                    .whereEqualTo("athleteUid", userUid)
-                    .get().await()
-                val assignedList = assignedSnap.documents.map { doc ->
-                    val status = doc.getString("status") ?: "pending"
-                    val exList = (doc.get("exercises") as? List<Map<String, Any>>)?.map { ex ->
-                        AssignedExerciseModel(
-                            name = ex["name"] as? String ?: "",
-                            plannedSets = (ex["plannedSets"] as? Long)?.toInt() ?: 3,
-                            plannedReps = ex["plannedReps"] as? String ?: "10",
-                            plannedWeight = (ex["plannedWeight"] as? Number)?.toDouble()
-                        )
-                    } ?: emptyList()
-
-                    AssignedWorkoutModel(
-                        id = doc.id,
-                        trainerUid = doc.getString("trainerUid") ?: "",
-                        trainerName = doc.getString("trainerName") ?: "",
-                        athleteUid = doc.getString("athleteUid") ?: "",
-                        title = doc.getString("title") ?: "",
-                        dateEpochDay = doc.getLong("dateEpochDay") ?: 0,
-                        description = doc.getString("description") ?: "",
-                        exercises = exList,
-                        createdAt = doc.getLong("createdAt") ?: 0,
-                        isCompleted = status == "completed"
-                    )
-                }
-
-                val completedSnap = db.collection("completed_workouts")
-                    .whereEqualTo("athleteUid", userUid)
-                    .get().await()
-                val completedList = completedSnap.documents.map { doc ->
-                    val exList = (doc.get("exercises") as? List<Map<String, Any>>)?.map { ex ->
-                        val setsList = (ex["sets"] as? List<Map<String, Any>>) ?: emptyList()
-                        AssignedExerciseModel(
-                            name = ex["name"] as? String ?: "",
-                            plannedSets = (ex["plannedSets"] as? Long)?.toInt() ?: (if (setsList.isNotEmpty()) setsList.size else 3),
-                            plannedReps = ex["plannedReps"] as? String ?: "10",
-                            plannedWeight = (ex["plannedWeight"] as? Number)?.toDouble()
-                        )
-                    } ?: emptyList()
-
-                    AssignedWorkoutModel(
-                        id = doc.id,
-                        trainerUid = "",
-                        trainerName = "",
-                        athleteUid = doc.getString("athleteUid") ?: userUid,
-                        title = doc.getString("title") ?: "",
-                        dateEpochDay = doc.getLong("dateEpochDay") ?: 0,
-                        description = doc.getString("description") ?: "",
-                        exercises = exList,
-                        createdAt = doc.getLong("createdAt") ?: 0,
-                        isCompleted = true
-                    )
-                }
-
-                val allList = mutableListOf<AssignedWorkoutModel>()
-                allList.addAll(completedList)
-                assignedList.forEach { assigned ->
-                    val existsInCompleted = completedList.any {
-                        it.title == assigned.title && it.dateEpochDay == assigned.dateEpochDay
-                    }
-                    if (!existsInCompleted) {
-                        allList.add(assigned)
-                    }
-                }
-
-                userWorkouts = allList.sortedByDescending { it.dateEpochDay }
+                val trainerUid = auth.uid?.takeIf { profile.role == "trainer" }
+                userWorkouts = WorkoutDelivery.loadAssignments(db, userUid, trainerUid)
             } catch (e: Exception) {
+                error = e.userMessage("Не удалось загрузить тренировки.")
                 userWorkouts = emptyList()
             } finally {
                 isLoadingWorkouts = false
@@ -286,11 +227,15 @@ class ProfileViewModel(private val repo: WorkoutRepository? = null) : ViewModel(
     }
 
     private fun loadProfile() {
-        val uid = auth.uid ?: return
+        val uid = auth.uid ?: run {
+            isLoading = false
+            return
+        }
         
-        db.collection("users").document(uid).addSnapshotListener { doc, e ->
+        profileListener = db.collection("profiles").document(uid).addSnapshotListener { doc, e ->
             if (e != null || doc == null || !doc.exists()) {
-                if (isLoading) isLoading = false
+                error = e?.userMessage("Не удалось загрузить профиль.") ?: "Профиль больше недоступен."
+                isLoading = false
                 return@addSnapshotListener
             }
             profile = UserProfile(
@@ -299,8 +244,6 @@ class ProfileViewModel(private val repo: WorkoutRepository? = null) : ViewModel(
                 dobEpochDay = doc.getLong("dobEpochDay") ?: LocalDate.now().toEpochDay(),
                 avatarUrl = doc.getString("avatarBase64") ?: "",
                 role = doc.getString("role") ?: "athlete",
-                heightCm = doc.getLong("heightCm")?.toInt(),
-                weightKg = doc.getDouble("weightKg"),
                 gender = doc.getString("gender") ?: "male",
                 clubId = doc.getString("clubId"),
                 clubName = doc.getString("clubName"),
@@ -310,39 +253,14 @@ class ProfileViewModel(private val repo: WorkoutRepository? = null) : ViewModel(
             isLoading = false
         }
 
-        viewModelScope.launch {
-            try {
-                val clubsSnap = db.collection("clubs").get().await()
-                availableClubs = clubsSnap.documents.map { d ->
-                    ClubModel(id = d.id, name = d.getString("name") ?: "", address = d.getString("address") ?: "")
-                }
-
-                val usersSnap = db.collection("users").get().await()
-                availableTrainers = usersSnap.documents.mapNotNull { d ->
-                    val r = d.getString("role") ?: "athlete"
-                    if (r == "trainer" || r == "admin") {
-                        AdminUserModel(
-                            uid = d.id,
-                            nickname = d.getString("nickname") ?: d.getString("email") ?: "Тренер",
-                            username = d.getString("username") ?: "",
-                            role = r
-                        )
-                    } else null
-                }
-
-                val reqSnap = db.collection("trainer_requests")
-                    .whereEqualTo("athleteUid", uid)
-                    .whereEqualTo("status", "pending")
-                    .get().await()
-                if (!reqSnap.isEmpty) {
-                    pendingTrainerRequestName = reqSnap.documents.first().getString("trainerName")
-                }
-            } catch (e: Exception) {
-                if (isLoading) error = "Не удалось загрузить данные (возможно нет сети)"
-            } finally {
-                isLoading = false
+        requestListener = db.collection("trainer_requests")
+            .whereEqualTo("athleteUid", uid).whereEqualTo("status", "pending")
+            .addSnapshotListener { snapshot, failure ->
+                if (failure != null) error = failure.userMessage("Не удалось загрузить заявки тренерам.")
+                if (snapshot != null) pendingTrainerRequests = snapshot.documents
+                    .mapNotNull { it.activeTrainerRequest() }.sortedByDescending { it.timestamp }
             }
-        }
+
     }
 
     fun loadClubDetails(clubId: String) {
@@ -359,7 +277,7 @@ class ProfileViewModel(private val repo: WorkoutRepository? = null) : ViewModel(
                     )
                 }
                 
-                val usersSnap = db.collection("users")
+                val usersSnap = db.collection("profiles")
                     .whereEqualTo("clubId", clubId)
                     .get().await()
                 
@@ -373,157 +291,97 @@ class ProfileViewModel(private val repo: WorkoutRepository? = null) : ViewModel(
                         role = d.getString("role") ?: "athlete",
                         dobEpochDay = d.getLong("dobEpochDay"),
                         clubId = d.getString("clubId"),
-                        clubName = d.getString("clubName")
+                        clubName = d.getString("clubName"),
+                        trainerUid = d.getString("trainerUid"),
+                        trainerName = d.getString("trainerName")
                     )
                 }
             } catch (e: Exception) {
-                error = "Ошибка загрузки информации о клубе: ${e.localizedMessage}"
+                error = e.userMessage("Ошибка загрузки информации о клубе.")
             }
         }
     }
 
-    fun requestTrainer(trainer: AdminUserModel) {
+    fun requestTrainer(trainer: AdminUserModel) = sendTrainerRequest(trainer)
+
+    fun withdrawTrainerRequest(req: TrainerRequestModel) {
+        error = null
+        viewModelScope.launch {
+            try {
+                TrainerRequests(db).withdraw(req)
+                successMsg = "Заявка тренеру ${req.trainerName} отозвана"
+            } catch (e: Exception) {
+                error = e.userMessage("Не удалось отозвать заявку.")
+            }
+        }
+    }
+
+    private fun sendTrainerRequest(trainer: AdminUserModel, club: ClubModel? = null) {
         val uid = auth.uid ?: return
-        val athleteName = profile.nickname.ifBlank { auth.currentUser?.email ?: "Спортсмен" }
+        if (isSaving || profile.role != "athlete") return
+        isSaving = true
+        trainerRequestError = null
         viewModelScope.launch {
             try {
-                db.collection("users").document(uid).update(
-                    mapOf("trainerUid" to trainer.uid, "trainerName" to trainer.nickname)
-                ).await()
-                profile = profile.copy(trainerUid = trainer.uid, trainerName = trainer.nickname)
-
-                val data = hashMapOf(
-                    "trainerUid" to trainer.uid,
-                    "trainerName" to trainer.nickname,
-                    "athleteUid" to uid,
-                    "athleteName" to athleteName,
-                    "athleteEmail" to (auth.currentUser?.email ?: ""),
-                    "status" to "pending",
-                    "timestamp" to System.currentTimeMillis()
-                )
-                db.collection("trainer_requests").add(data).await()
-                pendingTrainerRequestName = trainer.nickname
-                successMsg = "Вы выбрали тренера ${trainer.nickname} и отправили ему заявку!"
+                TrainerRequests(db).send(uid, trainer.uid, club)
+                sentRequestMessage = "Заявка тренеру ${trainer.nickname} отправлена."
             } catch (e: Exception) {
-                error = "Ошибка при выборе тренера: ${e.localizedMessage}"
-            }
-        }
-    }
-
-    fun loadTrainersForClub(clubId: String) {
-        viewModelScope.launch {
-            try {
-                val usersSnap = db.collection("users")
-                    .whereEqualTo("clubId", clubId)
-                    .get().await()
-                
-                availableTrainers = usersSnap.documents.mapNotNull { d ->
-                    val r = d.getString("role") ?: "athlete"
-                    if (r == "trainer" || r == "admin") {
-                        AdminUserModel(
-                            uid = d.id,
-                            nickname = d.getString("nickname") ?: d.getString("email") ?: "Тренер",
-                            username = d.getString("username") ?: "",
-                            role = r
-                        )
-                    } else null
-                }
-            } catch (e: Exception) {
-                error = "Ошибка загрузки тренеров клуба: ${e.localizedMessage}"
-            }
-        }
-    }
-
-    fun joinClubAndRequestTrainer(club: ClubModel, trainer: AdminUserModel?) {
-        val uid = auth.uid ?: return
-        val athleteName = profile.nickname.ifBlank { auth.currentUser?.email ?: "Спортсмен" }
-        viewModelScope.launch {
-            try {
-                db.collection("users").document(uid).update(
-                    mapOf("clubId" to club.id, "clubName" to club.name)
-                ).await()
-                profile = profile.copy(clubId = club.id, clubName = club.name)
-                
-                if (trainer != null) {
-                    val data = hashMapOf(
-                        "trainerUid" to trainer.uid,
-                        "trainerName" to trainer.nickname,
-                        "athleteUid" to uid,
-                        "athleteName" to athleteName,
-                        "athleteEmail" to (auth.currentUser?.email ?: ""),
-                        "status" to "pending",
-                        "timestamp" to System.currentTimeMillis()
-                    )
-                    db.collection("trainer_requests").add(data).await()
-                    pendingTrainerRequestName = trainer.nickname
-                    successMsg = "Вы вступили в клуб ${club.name} и отправили заявку тренеру ${trainer.nickname}!"
-                } else {
-                    successMsg = "Вы вступили в клуб ${club.name}!"
-                }
-            } catch (e: Exception) {
-                error = "Ошибка при вступлении в клуб: ${e.localizedMessage}"
-            }
-        }
-    }
-
-    fun leaveClubAndTrainer() {
-        val uid = auth.uid ?: return
-        viewModelScope.launch {
-            try {
-                db.collection("users").document(uid).update(
-                    mapOf("clubId" to null, "clubName" to null, "trainerUid" to null, "trainerName" to null)
-                ).await()
-                profile = profile.copy(clubId = null, clubName = null, trainerUid = null, trainerName = null)
-                pendingTrainerRequestName = null
-                successMsg = "Вы покинули клуб и открепились от тренера"
-            } catch (e: Exception) {
-                error = "Ошибка при выходе из клуба: ${e.localizedMessage}"
-            }
-        }
-    }
-
-    fun setAvatarBitmap(bitmap: Bitmap) {
-        viewModelScope.launch {
-            try {
-                isSaving = true
-                val baos = ByteArrayOutputStream()
-                bitmap.compress(Bitmap.CompressFormat.JPEG, 60, baos)
-                val byteArray = baos.toByteArray()
-                val base64String = Base64.encodeToString(byteArray, Base64.DEFAULT)
-
-                profile = profile.copy(avatarUrl = base64String)
-                saveProfile()
-            } catch (e: Exception) {
-                error = "Ошибка обработки фото: ${e.localizedMessage}"
+                trainerRequestError = e.userMessage("Не удалось отправить заявку.")
             } finally {
                 isSaving = false
             }
         }
     }
 
-    fun saveProfile() {
+    fun joinClubAndRequestTrainer(club: ClubModel, trainer: AdminUserModel?) {
+        if (trainer != null) {
+            sendTrainerRequest(trainer, club)
+            return
+        }
         val uid = auth.uid ?: return
         viewModelScope.launch {
             try {
-                val data = hashMapOf(
-                    "nickname" to profile.nickname.trim(),
-                    "username" to profile.username.trim(),
-                    "dobEpochDay" to profile.dobEpochDay,
-                    "avatarBase64" to profile.avatarUrl,
-                    "role" to profile.role,
-                    "heightCm" to profile.heightCm,
-                    "weightKg" to profile.weightKg,
-                    "gender" to profile.gender,
-                    "clubId" to profile.clubId,
-                    "clubName" to profile.clubName,
-                    "trainerUid" to profile.trainerUid,
-                    "trainerName" to profile.trainerName
-                )
-                db.collection("users").document(uid).set(data)
+                db.collection("profiles").document(uid).update(
+                    mapOf("clubId" to club.id, "clubName" to club.name)
+                ).await()
+                successMsg = "Вы вступили в клуб ${club.name}"
             } catch (e: Exception) {
-                error = "Ошибка локального сохранения: ${e.localizedMessage}"
+                error = e.userMessage("Не удалось вступить в клуб.")
             }
         }
+    }
+
+    fun leaveClub() {
+        val uid = auth.uid ?: return
+        viewModelScope.launch {
+            try {
+                db.collection("profiles").document(uid).update(
+                    mapOf("clubId" to null, "clubName" to null)
+                ).await()
+                successMsg = "Вы покинули клуб"
+            } catch (e: Exception) {
+                error = e.userMessage("Не удалось покинуть клуб.")
+            }
+        }
+    }
+
+    fun detachTrainer() {
+        val uid = auth.uid ?: return
+        error = null
+        viewModelScope.launch {
+            try {
+                db.collection("profiles").document(uid)
+                    .update(mapOf("trainerUid" to null, "trainerName" to null)).await()
+                successMsg = "Вы открепились от тренера"
+            } catch (e: Exception) {
+                error = e.userMessage("Не удалось открепиться от тренера.")
+            }
+        }
+    }
+
+    override fun onCleared() {
+        profileListener?.remove()
+        requestListener?.remove()
     }
 
     fun deleteAccount(onDeleted: () -> Unit) {
@@ -532,13 +390,13 @@ class ProfileViewModel(private val repo: WorkoutRepository? = null) : ViewModel(
         viewModelScope.launch {
             try {
                 try {
-                    db.collection("users").document(uid).delete().await()
+                    db.collection("profiles").document(uid).delete().await()
                 } catch (_: Exception) {}
                 user.delete().await()
                 auth.signOut()
                 onDeleted()
             } catch (e: Exception) {
-                error = "Для полного удаления аккаунта перезайдите в систему и нажмите кнопку снова: ${e.localizedMessage}"
+                error = e.userMessage("Не удалось удалить аккаунт.")
             }
         }
     }
@@ -567,6 +425,8 @@ fun ProfileScreen(
     ) { isGranted ->
         if (isGranted) {
             vm.setReminderEnabled(true, context)
+        } else {
+            vm.error = "Уведомления отключены. Разрешите их в настройках Android, чтобы получать напоминания."
         }
     }
 
@@ -594,23 +454,90 @@ fun ProfileScreen(
         ).show()
     }
 
-    val decodedBitmap = remember(vm.profile.avatarUrl) {
-        if (vm.profile.avatarUrl.isNotBlank()) {
-            try {
-                val imageBytes = Base64.decode(vm.profile.avatarUrl, Base64.DEFAULT)
-                BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
-            } catch (e: Exception) { null }
-        } else null
-    }
+    val decodedBitmap = rememberAvatarBitmap(vm.profile.avatarUrl)
 
     var viewingAthleteClubDetails by remember { mutableStateOf(false) }
     var viewingUserAccount by remember { mutableStateOf<AdminUserModel?>(null) }
+    var showDetachTrainer by remember { mutableStateOf(false) }
+    var showLogout by remember { mutableStateOf(false) }
+    var requestToWithdraw by remember { mutableStateOf<TrainerRequestModel?>(null) }
+
+    if (showLogout) {
+        ConfirmDialog(
+            title = "Выйти из аккаунта?",
+            text = "Чтобы снова открыть свой дневник, войдите в аккаунт.",
+            confirmText = "Выйти",
+            destructive = false,
+            onConfirm = {
+                showLogout = false
+                vm.logout(onLogout)
+            },
+            onDismiss = { showLogout = false }
+        )
+    }
+
+    requestToWithdraw?.let { request ->
+        ConfirmDialog(
+            title = "Отозвать заявку?",
+            text = "Заявка тренеру «${request.trainerName}» будет отозвана.",
+            confirmText = "Отозвать",
+            onConfirm = {
+                requestToWithdraw = null
+                vm.withdrawTrainerRequest(request)
+            },
+            onDismiss = { requestToWithdraw = null }
+        )
+    }
+
+    if (showDetachTrainer) {
+        ConfirmDialog(
+            title = "Открепиться от тренера?",
+            text = "Тренер потеряет доступ к вашим тренировкам и не сможет назначать новые.",
+            confirmText = "Открепиться",
+            onConfirm = {
+                showDetachTrainer = false
+                vm.detachTrainer()
+            },
+            onDismiss = { showDetachTrainer = false }
+        )
+    }
+
+    vm.trainerRequestError?.let { message ->
+        ConfirmDialog(
+            title = "Заявка не отправлена",
+            text = message,
+            confirmText = "Понятно",
+            destructive = false,
+            dismissText = null,
+            onConfirm = { vm.trainerRequestError = null },
+            onDismiss = { vm.trainerRequestError = null }
+        )
+    }
+
+    vm.sentRequestMessage?.let { message ->
+        ConfirmDialog(
+            title = "Заявка отправлена",
+            text = message,
+            confirmText = "Понятно",
+            destructive = false,
+            dismissText = null,
+            onConfirm = { vm.sentRequestMessage = null },
+            onDismiss = { vm.sentRequestMessage = null }
+        )
+    }
 
     if (viewingUserAccount != null) {
         val user = viewingUserAccount!!
         val currentUserId = FirebaseAuth.getInstance().uid
-        LaunchedEffect(user.uid) {
-            vm.loadUserWorkouts(user.uid)
+        var selectedWorkout by remember(user.uid) { mutableStateOf<AssignedWorkoutModel?>(null) }
+        val canViewWorkouts = vm.profile.role == "admin" ||
+            (vm.profile.role == "trainer" && currentUserId != null && user.trainerUid == currentUserId)
+        LaunchedEffect(user.uid, canViewWorkouts) {
+            if (canViewWorkouts) vm.loadUserWorkouts(user.uid)
+        }
+        selectedWorkout?.takeIf { canViewWorkouts }?.let { workout ->
+            AssignedWorkoutDetailPanel(workout, user, onBack = { selectedWorkout = null })
+            return
         }
         UserProfilePanel(
             user = user,
@@ -619,6 +546,7 @@ fun ProfileScreen(
                 vm.requestTrainer(trainer)
                 viewingUserAccount = null
             },
+            onWorkoutClick = { selectedWorkout = it },
             currentUserId = currentUserId,
             viewerRole = vm.profile.role,
             athleteTrainerUid = vm.profile.trainerUid,
@@ -634,7 +562,6 @@ fun ProfileScreen(
             vm.loadClubDetails(vm.profile.clubId!!)
         }
 
-        var showChangeTrainerDialog by remember { mutableStateOf(false) }
         var showLeaveClubConfirm by remember { mutableStateOf(false) }
 
         val club = vm.currentClubDetails
@@ -648,12 +575,9 @@ fun ProfileScreen(
                 .statusBarsPadding()
         ) {
             ScreenHeader(
-                title = vm.profile.clubName ?: "Мой клуб",
+                title = club?.name ?: vm.profile.clubName ?: "Мой клуб",
                 onBack = { viewingAthleteClubDetails = false },
                 actions = {
-                    IconButton(onClick = { showChangeTrainerDialog = true }) {
-                        Icon(Icons.Filled.Sync, "Сменить тренера", tint = Color.White)
-                    }
                     IconButton(onClick = { showLeaveClubConfirm = true }) {
                         Icon(Icons.AutoMirrored.Filled.ExitToApp, "Покинуть клуб", tint = MaterialTheme.colorScheme.error)
                     }
@@ -752,67 +676,24 @@ fun ProfileScreen(
         }
 
         if (showLeaveClubConfirm) {
-            AlertDialog(
-                onDismissRequest = { showLeaveClubConfirm = false },
-                title = { Text("Покинуть клуб?") },
-                text = { Text("Вы уверены, что хотите покинуть текущий клуб и открепиться от тренера?") },
-                confirmButton = {
-                    TextButton(onClick = {
-                        vm.leaveClubAndTrainer()
-                        showLeaveClubConfirm = false
-                        viewingAthleteClubDetails = false
-                    }) {
-                        Text("Покинуть", color = MaterialTheme.colorScheme.error)
-                    }
+            ConfirmDialog(
+                title = "Покинуть клуб?",
+                text = "Вы перестанете числиться участником этого клуба.",
+                confirmText = "Покинуть",
+                onConfirm = {
+                    showLeaveClubConfirm = false
+                    vm.leaveClub()
+                    viewingAthleteClubDetails = false
                 },
-                dismissButton = {
-                    TextButton(onClick = { showLeaveClubConfirm = false }) { Text("Отмена") }
-                }
+                onDismiss = { showLeaveClubConfirm = false }
             )
         }
 
-        if (showChangeTrainerDialog) {
-            AlertDialog(
-                onDismissRequest = { showChangeTrainerDialog = false },
-                title = { Text("Выберите тренера") },
-                text = {
-                    Column(Modifier.verticalScroll(rememberScrollState())) {
-                        if (clubTrainers.isEmpty()) {
-                            Text("В клубе нет доступных тренеров", color = Color.Gray)
-                        } else {
-                            clubTrainers.forEach { trainer ->
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable {
-                                            vm.requestTrainer(trainer)
-                                            showChangeTrainerDialog = false
-                                        }
-                                        .padding(vertical = 8.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(Icons.Filled.Sports, null, tint = Color(0xFF00BFFF))
-                                    Spacer(Modifier.width(8.dp))
-                                    Column {
-                                        Text(trainer.nickname, fontWeight = FontWeight.Bold, color = Color.White)
-                                        if (trainer.username.isNotBlank()) Text("@${trainer.username}", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
-                                    }
-                                }
-                                HorizontalDivider(color = Color.White.copy(alpha = 0.1f))
-                            }
-                        }
-                    }
-                },
-                confirmButton = {
-                    TextButton(onClick = { showChangeTrainerDialog = false }) { Text("Закрыть") }
-                }
-            )
-        }
 
         return
     }
 
-    Box(Modifier.fillMaxSize().background(Color.Black)) {
+    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         Column(Modifier.fillMaxSize()) {
             // Header with Profile title, DT logo and Settings icon
             Box(
@@ -861,8 +742,9 @@ fun ProfileScreen(
                 }
             }
 
+            ErrorText(vm.error, Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
             if (vm.isLoading) {
-                Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator(color = Color(0xFFA6FF00)) }
+                Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator(color = DenTrainPalette.Lime) }
                 return@Column
             }
 
@@ -881,7 +763,7 @@ fun ProfileScreen(
                     val avatarModifier = Modifier
                         .size(110.dp)
                         .clip(CircleShape)
-                        .background(Color(0xFF1B1D25))
+                        .background(DenTrainPalette.Panel)
 
                     if (decodedBitmap != null) {
                         Image(
@@ -892,7 +774,7 @@ fun ProfileScreen(
                         )
                     } else {
                         Box(avatarModifier, contentAlignment = Alignment.Center) {
-                            Icon(Icons.Filled.CameraAlt, "Аватар", Modifier.size(36.dp), tint = Color(0xFFA0A7B8))
+                            Icon(Icons.Filled.CameraAlt, "Аватар", Modifier.size(36.dp), tint = DenTrainPalette.MutedText)
                         }
                     }
                 }
@@ -909,15 +791,15 @@ fun ProfileScreen(
 
                 // Role badge: 🔵 Спортсмен
                 val roleTitle = when (vm.profile.role) {
-                    "admin" -> "Администратор"
+                    "admin" -> "Администратор · Тренер"
                     "trainer" -> "Тренер"
                     else -> "Спортсмен"
                 }
                 Box(
                     modifier = Modifier
                         .clip(RoundedCornerShape(20.dp))
-                        .background(Color(0xFF1B1D25))
-                        .border(BorderStroke(1.dp, Color(0xFF282B36)), RoundedCornerShape(20.dp))
+                        .background(DenTrainPalette.Panel)
+                        .border(BorderStroke(1.dp, DenTrainPalette.SubtleBorder), RoundedCornerShape(20.dp))
                         .padding(horizontal = 14.dp, vertical = 6.dp),
                     contentAlignment = Alignment.Center
                 ) {
@@ -991,17 +873,24 @@ fun ProfileScreen(
                                 color = Color.White
                             )
                         }
-                        if (vm.profile.trainerName != null) {
-                            Spacer(Modifier.height(12.dp))
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Filled.Sports, null, tint = Color(0xFFA0A7B8))
-                                Spacer(Modifier.size(12.dp))
-                                Text("Тренер: ${vm.profile.trainerName}", fontSize = 15.sp, color = Color(0xFFA0A7B8))
+                    } else {
+                        Text("Клуб не выбран", color = DenTrainPalette.MutedText, fontSize = 15.sp)
+                    }
+                    vm.profile.trainerName?.let { trainer ->
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Text("Тренер · $trainer", Modifier.weight(1f), color = DenTrainPalette.MutedText)
+                            TextButton(onClick = { showDetachTrainer = true }) { Text("Открепиться") }
+                        }
+                    }
+                    if (vm.profile.trainerUid == null) {
+                        vm.pendingTrainerRequests.forEach { request ->
+                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                Text("Ожидает ответа · ${request.trainerName}", Modifier.weight(1f), color = DenTrainPalette.MutedText)
+                                TextButton(onClick = { requestToWithdraw = request }) { Text("Отозвать") }
                             }
                         }
-                    } else {
-                        Text("Клуб не выбран", color = Color(0xFFA0A7B8), fontSize = 15.sp)
                     }
+                    vm.successMsg?.let { Text(it, color = DenTrainPalette.Lime) }
                 }
 
                 Spacer(Modifier.height(16.dp))
@@ -1027,16 +916,11 @@ fun ProfileScreen(
                     )
                     HorizontalDivider(color = Color(0xFF3E4150), thickness = 1.5.dp)
                     
-                    val dateStr = runCatching { 
-                        LocalDate.ofEpochDay(vm.profile.dobEpochDay)
-                            .format(DateTimeFormatter.ofPattern("dd.MM.yyyy")) 
-                    }.getOrElse { "11.11.2026" }
-                    
                     ProfileInfoRow(
-                        value = dateStr,
+                        value = runCatching { Fmt.shortDate(vm.profile.dobEpochDay) }.getOrDefault("—"),
                         label = "Дата рождения"
                     )
-                    
+
                     Spacer(Modifier.height(16.dp))
 
                     HorizontalDivider(color = Color(0xFF3E4150), thickness = 1.5.dp)
@@ -1045,7 +929,7 @@ fun ProfileScreen(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { vm.logout(onLogout) }
+                            .clickable { showLogout = true }
                             .padding(vertical = 12.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -1066,14 +950,14 @@ fun ProfileScreen(
                 if (settingsState != null) {
                     SectionTitle("Настройки тренировок")
                     ProfileCard(
-                        border = if (settings.autoRestTimer) BorderStroke(1.dp, Color.White) else BorderStroke(1.dp, Color(0xFF282B36))
+                        border = if (settings.autoRestTimer) BorderStroke(1.dp, Color.White) else BorderStroke(1.dp, DenTrainPalette.SubtleBorder)
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
                                 Text("Автозапуск таймера после подхода", fontWeight = FontWeight.Bold, color = Color.White)
                                 Text(
                                     "Отдых стартует сразу после клика «Сохранить подход».",
-                                    fontSize = 12.sp, color = Color(0xFFA0A7B8)
+                                    fontSize = 12.sp, color = DenTrainPalette.MutedText
                                 )
                             }
                             Switch(
@@ -1084,7 +968,7 @@ fun ProfileScreen(
                                 },
                                 colors = SwitchDefaults.colors(
                                     checkedTrackColor = Color.White,
-                                    checkedThumbColor = Color(0xFF1B1D25),
+                                    checkedThumbColor = DenTrainPalette.Panel,
                                     checkedBorderColor = Color.White
                                 )
                             )
@@ -1094,14 +978,14 @@ fun ProfileScreen(
                     Spacer(Modifier.height(12.dp))
 
                     ProfileCard(
-                        border = if (settings.swapWeightReps) BorderStroke(1.dp, Color.White) else BorderStroke(1.dp, Color(0xFF282B36))
+                        border = if (settings.swapWeightReps) BorderStroke(1.dp, Color.White) else BorderStroke(1.dp, DenTrainPalette.SubtleBorder)
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
                                 Text("Сменить «КГ» и «Повт.» местами", fontWeight = FontWeight.Bold, color = Color.White)
                                 Text(
                                     "Меняет порядок ввода веса и повторений в карточке.",
-                                    fontSize = 12.sp, color = Color(0xFFA0A7B8)
+                                    fontSize = 12.sp, color = DenTrainPalette.MutedText
                                 )
                             }
                             Switch(
@@ -1112,7 +996,7 @@ fun ProfileScreen(
                                 },
                                 colors = SwitchDefaults.colors(
                                     checkedTrackColor = Color.White,
-                                    checkedThumbColor = Color(0xFF1B1D25),
+                                    checkedThumbColor = DenTrainPalette.Panel,
                                     checkedBorderColor = Color.White
                                 )
                             )
@@ -1122,7 +1006,7 @@ fun ProfileScreen(
                     Spacer(Modifier.height(16.dp))
 
                     ProfileCard(
-                        border = if (settings.reminderEnabled) BorderStroke(1.dp, Color.White) else BorderStroke(1.dp, Color(0xFF282B36))
+                        border = if (settings.reminderEnabled) BorderStroke(1.dp, Color.White) else BorderStroke(1.dp, DenTrainPalette.SubtleBorder)
                     ) {
                         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1130,7 +1014,7 @@ fun ProfileScreen(
                                     Text("Уведомления о тренировках 🏋️‍♂️", fontWeight = FontWeight.Bold, color = Color.White)
                                     Text(
                                         "Присылает уведомления перед тренировкой.",
-                                        fontSize = 12.sp, color = Color(0xFFA0A7B8)
+                                        fontSize = 12.sp, color = DenTrainPalette.MutedText
                                     )
                                 }
                                 Switch(
@@ -1141,7 +1025,7 @@ fun ProfileScreen(
                                     },
                                     colors = SwitchDefaults.colors(
                                         checkedTrackColor = Color.White,
-                                        checkedThumbColor = Color(0xFF1B1D25),
+                                        checkedThumbColor = DenTrainPalette.Panel,
                                         checkedBorderColor = Color.White
                                     )
                                 )
@@ -1156,7 +1040,7 @@ fun ProfileScreen(
                                     },
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
-                                    Icon(Icons.Filled.AccessTime, null, tint = Color(0xFFA6FF00))
+                                    Icon(Icons.Filled.AccessTime, null, tint = DenTrainPalette.Lime)
                                     Spacer(Modifier.width(8.dp))
                                     Text("Время начала: ${settings.workoutStartTime}", color = Color.White)
                                 }
@@ -1177,9 +1061,9 @@ fun ProfileScreen(
                                                 .weight(1f)
                                                 .height(38.dp)
                                                 .clip(RoundedCornerShape(8.dp))
-                                                .background(if (isSel) Color(0xFF242732) else Color(0xFF1B1D25))
+                                                .background(if (isSel) DenTrainPalette.RaisedPanel else DenTrainPalette.Panel)
                                                 .border(
-                                                    BorderStroke(1.dp, if (isSel) Color(0xFFA6FF00) else Color(0xFF333644)),
+                                                    BorderStroke(1.dp, if (isSel) DenTrainPalette.Lime else DenTrainPalette.Border),
                                                     RoundedCornerShape(8.dp)
                                                 )
                                                 .clickable {
@@ -1192,7 +1076,7 @@ fun ProfileScreen(
                                                 text = dayName,
                                                 fontSize = 11.sp,
                                                 fontWeight = if (isSel) FontWeight.Bold else FontWeight.Medium,
-                                                color = if (isSel) Color.White else Color(0xFFA0A7B8)
+                                                color = if (isSel) Color.White else DenTrainPalette.MutedText
                                             )
                                         }
                                     }
@@ -1213,9 +1097,9 @@ fun ProfileScreen(
                                                 .weight(1f)
                                                 .height(34.dp)
                                                 .clip(RoundedCornerShape(8.dp))
-                                                .background(if (isSel) Color(0xFF242732) else Color(0xFF1B1D25))
+                                                .background(if (isSel) DenTrainPalette.RaisedPanel else DenTrainPalette.Panel)
                                                 .border(
-                                                    BorderStroke(1.dp, if (isSel) Color(0xFFA6FF00) else Color(0xFF333644)),
+                                                    BorderStroke(1.dp, if (isSel) DenTrainPalette.Lime else DenTrainPalette.Border),
                                                     RoundedCornerShape(8.dp)
                                                 )
                                                 .clickable {
@@ -1228,7 +1112,7 @@ fun ProfileScreen(
                                                 text = label,
                                                 fontSize = 11.sp,
                                                 fontWeight = if (isSel) FontWeight.Bold else FontWeight.Medium,
-                                                color = if (isSel) Color.White else Color(0xFFA0A7B8)
+                                                color = if (isSel) Color.White else DenTrainPalette.MutedText
                                             )
                                         }
                                     }
@@ -1238,8 +1122,6 @@ fun ProfileScreen(
                     }
                 }
 
-                Spacer(Modifier.height(16.dp))
-                ErrorText(vm.error)
             }
         }
     }
@@ -1248,14 +1130,14 @@ fun ProfileScreen(
 @Composable
 fun ProfileCard(
     modifier: Modifier = Modifier,
-    border: BorderStroke = BorderStroke(1.dp, Color(0xFF282B36)),
+    border: BorderStroke = BorderStroke(1.dp, DenTrainPalette.SubtleBorder),
     content: @Composable ColumnScope.() -> Unit
 ) {
     Column(
         modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
-            .background(Color(0xFF1B1D25))
+            .background(DenTrainPalette.Panel)
             .border(border, RoundedCornerShape(16.dp))
             .padding(16.dp),
         content = content
@@ -1279,7 +1161,7 @@ fun ProfileInfoRow(value: String, label: String) {
         Text(
             text = label,
             fontSize = 14.sp,
-            color = Color(0xFFA0A7B8)
+            color = DenTrainPalette.MutedText
         )
     }
 }

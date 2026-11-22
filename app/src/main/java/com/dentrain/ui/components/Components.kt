@@ -1,7 +1,6 @@
 package com.dentrain.ui.components
 
-import android.graphics.BitmapFactory
-import android.util.Base64
+import com.dentrain.ui.theme.DenTrainPalette
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
@@ -15,6 +14,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.lazy.LazyColumn
@@ -44,6 +44,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -59,9 +60,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.drawWithContent
@@ -140,6 +143,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -153,6 +158,9 @@ import com.dentrain.ui.theme.LocalGradient
 import com.dentrain.ui.theme.LocalHeaderLogoVisible
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import com.dentrain.util.isWorkingPlanComplete
+import com.dentrain.util.totalWorkingSets
+import com.dentrain.util.completedWorkingSets
 import com.dentrain.util.Fmt
 import com.dentrain.util.Haptic
 import java.time.LocalDate
@@ -232,9 +240,7 @@ fun GradientButton(
                 color = Color.White,
                 fontWeight = FontWeight.Bold,
                 fontSize = 15.sp,
-                textAlign = TextAlign.Center,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                textAlign = TextAlign.Center
             )
         }
     }
@@ -298,6 +304,20 @@ fun ZCard(
 }
 
 @Composable
+internal fun WorkoutListCount(count: Int, label: String, labelColor: Color) {
+    val text = remember(count, label, labelColor) {
+        buildAnnotatedString {
+            withStyle(SpanStyle(color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.ExtraBold)) {
+                append(count.toString())
+            }
+            append(' ')
+            append(label)
+        }
+    }
+    Text(text, color = labelColor, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+}
+
+@Composable
 fun SectionTitle(text: String, modifier: Modifier = Modifier) {
     Text(
         text, modifier = modifier.padding(top = 8.dp),
@@ -312,7 +332,7 @@ fun BorderedBackButton(onClick: () -> Unit) {
             modifier = Modifier
                 .size(36.dp)
                 .clip(CircleShape)
-                .background(Color(0xFF242732))
+                .background(DenTrainPalette.RaisedPanel)
                 .border(BorderStroke(1.dp, Color.White), CircleShape),
             contentAlignment = Alignment.Center
         ) {
@@ -384,21 +404,6 @@ fun EmptyState(icon: ImageVector, title: String, hint: String? = null, modifier:
     }
 }
 
-@Composable
-fun ConfirmDialog(
-    title: String, text: String, confirmText: String = "Удалить",
-    onConfirm: () -> Unit, onDismiss: () -> Unit
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(title) },
-        text = { Text(text) },
-        confirmButton = {
-            TextButton(onClick = onConfirm) { Text(confirmText, color = MaterialTheme.colorScheme.error) }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } }
-    )
-}
 
 @Composable
 fun ErrorText(message: String?, modifier: Modifier = Modifier) {
@@ -411,33 +416,52 @@ fun ErrorText(message: String?, modifier: Modifier = Modifier) {
 /** Кнопка выбора даты. Дата хранится как epochDay. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun DateField(epochDay: Long, onChange: (Long) -> Unit, modifier: Modifier = Modifier, label: String = "Дата") {
+fun DateField(
+    epochDay: Long,
+    onChange: (Long) -> Unit,
+    modifier: Modifier = Modifier,
+    label: String = "Дата",
+    maxEpochDay: Long? = null
+) {
     var show by remember { mutableStateOf(false) }
     OutlinedButton(
         onClick = { show = true },
-        modifier = modifier.height(50.dp),
+        modifier = modifier.heightIn(min = 50.dp),
         shape = RoundedCornerShape(12.dp),
         colors = ButtonDefaults.outlinedButtonColors(
-            containerColor = Color(0xFF242732),
+            containerColor = DenTrainPalette.RaisedPanel,
             contentColor = Color.White
         ),
-        border = BorderStroke(1.dp, Color(0xFF333644))
+        border = BorderStroke(1.dp, DenTrainPalette.Border)
     ) {
-        Icon(Icons.Filled.CalendarMonth, null, tint = Color(0xFFA6FF00))
+        Icon(Icons.Filled.CalendarMonth, null, tint = DenTrainPalette.Lime)
         Spacer(Modifier.width(8.dp))
         Text("$label: ${Fmt.shortDate(epochDay)}", color = Color.White, fontWeight = FontWeight.Medium)
     }
     if (show) {
-        val state = rememberDatePickerState(initialSelectedDateMillis = epochDay * 86_400_000L)
+        val selectableDates = remember(maxEpochDay) {
+            object : androidx.compose.material3.SelectableDates {
+                override fun isSelectableDate(utcTimeMillis: Long): Boolean =
+                    maxEpochDay == null || Math.floorDiv(utcTimeMillis, 86_400_000L) <= maxEpochDay
+
+                override fun isSelectableYear(year: Int): Boolean =
+                    maxEpochDay == null || year <= LocalDate.ofEpochDay(maxEpochDay).year
+            }
+        }
+        val selectedDay = maxEpochDay?.let { epochDay.coerceAtMost(it) } ?: epochDay
+        val state = rememberDatePickerState(
+            initialSelectedDateMillis = selectedDay * 86_400_000L,
+            selectableDates = selectableDates
+        )
         DatePickerDialog(
             onDismissRequest = { show = false },
             confirmButton = {
-                TextButton(onClick = {
+                TextButton(enabled = state.selectedDateMillis != null, onClick = {
                     state.selectedDateMillis?.let { onChange(Math.floorDiv(it, 86_400_000L)) }
                     show = false
-                }) { Text("OK", color = Color(0xFFA6FF00)) }
+                }) { Text("OK", color = DenTrainPalette.Lime) }
             },
-            dismissButton = { TextButton(onClick = { show = false }) { Text("Отмена", color = Color(0xFFA0A7B8)) } }
+            dismissButton = { TextButton(onClick = { show = false }) { Text("Отмена", color = DenTrainPalette.MutedText) } }
         ) { DatePicker(state = state) }
     }
 }
@@ -477,7 +501,7 @@ fun CircularWorkoutProgress(
     workoutId: Long = 0L,
     size: Dp = 72.dp,
     strokeWidth: Dp = 6.dp,
-    accentColor: Color = Color(0xFFA6FF00)
+    accentColor: Color = DenTrainPalette.Lime
 ) {
     val targetProgress = remember(completedSets, totalPlannedSets) {
         if (totalPlannedSets > 0) {
@@ -523,13 +547,24 @@ fun CircularWorkoutProgress(
     val strokePx = with(LocalDensity.current) { strokeWidth.toPx() }
     val trackColor = Color(0xFF2C2C34)
 
+    val percentageStyle = TextStyle(
+        fontFeatureSettings = "tnum",
+        textAlign = TextAlign.Center,
+        fontWeight = FontWeight.ExtraBold,
+        fontSize = 16.sp,
+        color = Color.White
+    )
+    val percentageSize = rememberTextMeasurer().measure("100%", percentageStyle, maxLines = 1).size
+    val ringSize = with(LocalDensity.current) {
+        maxOf(size, percentageSize.width.toDp() + (strokeWidth + 4.dp) * 2)
+    }
     Box(
-        modifier = modifier.size(size),
+        modifier = modifier.size(ringSize),
         contentAlignment = Alignment.Center
     ) {
         Canvas(modifier = Modifier.fillMaxSize()) {
-            val arcSize = size.toPx() - strokePx
-            val topLeftOffset = strokePx / 2f
+            val arcSize = (this.size.minDimension - strokePx).coerceAtLeast(0f)
+            val topLeft = Offset((this.size.width - arcSize) / 2f, (this.size.height - arcSize) / 2f)
 
             // Track arc
             drawArc(
@@ -537,7 +572,7 @@ fun CircularWorkoutProgress(
                 startAngle = 0f,
                 sweepAngle = 360f,
                 useCenter = false,
-                topLeft = Offset(topLeftOffset, topLeftOffset),
+                topLeft = topLeft,
                 size = Size(arcSize, arcSize),
                 style = Stroke(width = strokePx, cap = StrokeCap.Round)
             )
@@ -549,7 +584,7 @@ fun CircularWorkoutProgress(
                     startAngle = -90f,
                     sweepAngle = 360f * animatedProgress,
                     useCenter = false,
-                    topLeft = Offset(topLeftOffset, topLeftOffset),
+                    topLeft = topLeft,
                     size = Size(arcSize, arcSize),
                     style = Stroke(width = strokePx, cap = StrokeCap.Round)
                 )
@@ -559,13 +594,7 @@ fun CircularWorkoutProgress(
         // Percentage text centered rigidly with tabular numbers to prevent position jittering
         Text(
             text = "$percentage%",
-            style = TextStyle(
-                fontFeatureSettings = "tnum",
-                textAlign = TextAlign.Center,
-                fontWeight = FontWeight.ExtraBold,
-                fontSize = 16.sp,
-                color = Color.White
-            ),
+            style = percentageStyle,
             maxLines = 1,
             softWrap = false
         )
@@ -573,6 +602,7 @@ fun CircularWorkoutProgress(
 }
 
 /** Карточка тренировки в процессе с круговым индикатором подходов справа (по 2-му фото). */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ActiveWorkoutCard(
     workout: WorkoutWithExercises,
@@ -580,14 +610,14 @@ fun ActiveWorkoutCard(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val accentColor = Color(0xFFA6FF00) // Яркий неон/лайм акцент
+    val accentColor = DenTrainPalette.Lime // Яркий неон/лайм акцент
 
-    val completedSets = remember(workout) { workout.exercises.sumOf { it.sets.size } }
-    val totalSets = remember(workout) { workout.exercises.sumOf { it.exercise.plannedSets } }
+    val completedSets = remember(workout) { workout.exercises.sumOf { it.completedWorkingSets } }
+    val totalSets = remember(workout) { workout.exercises.sumOf { it.totalWorkingSets } }
 
     val completedExercisesCount = remember(workout) {
         workout.exercises.count { ex ->
-            ex.sets.isNotEmpty() && (ex.exercise.plannedSets <= 0 || ex.sets.size >= ex.exercise.plannedSets)
+            ex.isWorkingPlanComplete
         }
     }
     val totalExercisesCount = workout.exercises.size
@@ -600,13 +630,13 @@ fun ActiveWorkoutCard(
         }
     }
 
-    Box(
+    BoxWithConstraints(
         modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
-            .background(Color(0xFF1B1D25))
+            .background(DenTrainPalette.Panel)
             .border(
-                BorderStroke(1.dp, Color(0xFF282B36)),
+                BorderStroke(1.dp, DenTrainPalette.SubtleBorder),
                 RoundedCornerShape(16.dp)
             )
             .clickable {
@@ -614,34 +644,28 @@ fun ActiveWorkoutCard(
                 onClick()
             }
     ) {
-        Row(
+        val stackProgress = maxWidth < 380.dp && LocalDensity.current.fontScale > 1.3f
+        FlowRow(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically
+                .padding(start = if (stackProgress) 16.dp else 32.dp, top = 16.dp, end = 16.dp, bottom = 16.dp)
+                .heightIn(min = 96.dp),
+            horizontalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterHorizontally),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            maxItemsInEachRow = if (stackProgress) 1 else 2
         ) {
-            // Зелёный полоса-акцент слева
-            Box(
-                modifier = Modifier
-                    .width(4.dp)
-                    .height(96.dp)
-                    .clip(RoundedCornerShape(4.dp))
-                    .background(accentColor)
-            )
-
-            Spacer(Modifier.width(12.dp))
-
             // Основная информация
             Column(
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1f).align(Alignment.CenterVertically),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 // Бэдж: В процессе
                 Row(
                     modifier = Modifier
+                        .offset(x = if (stackProgress) (-8).dp else (-24).dp, y = (-8).dp)
                         .clip(RoundedCornerShape(10.dp))
-                        .background(Color(0xFF242732))
-                        .border(BorderStroke(1.dp, Color(0xFF333644)), RoundedCornerShape(10.dp))
+                        .background(DenTrainPalette.RaisedPanel)
+                        .border(BorderStroke(1.dp, DenTrainPalette.Border), RoundedCornerShape(10.dp))
                         .padding(horizontal = 8.dp, vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -666,14 +690,14 @@ fun ActiveWorkoutCard(
                     color = Color.White,
                     fontSize = 20.sp,
                     fontWeight = FontWeight.ExtraBold,
-                    maxLines = 1,
+                    maxLines = if (stackProgress) Int.MAX_VALUE else 2,
                     overflow = TextOverflow.Ellipsis
                 )
 
                 // Подзаголовок: например "3 из 6 упражнений"
                 Text(
                     text = subtitleText,
-                    color = Color(0xFFA0A7B8),
+                    color = DenTrainPalette.MutedText,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.Medium
                 )
@@ -709,13 +733,12 @@ fun ActiveWorkoutCard(
                 }
             }
 
-            Spacer(Modifier.width(16.dp))
-
             // Круг выполненных подходов справа
             CircularWorkoutProgress(
                 completedSets = completedSets,
                 totalPlannedSets = totalSets,
                 workoutId = workout.workout.id,
+                modifier = Modifier.align(Alignment.CenterVertically),
                 size = 72.dp,
                 strokeWidth = 6.dp,
                 accentColor = accentColor
@@ -766,7 +789,7 @@ fun WeekCalendarRow(
         (0..6).map { startOfWeek.plusDays(it.toLong()) }
     }
 
-    val accentLime = Color(0xFFA6FF00)
+    val accentLime = DenTrainPalette.Lime
 
     val effectiveCompleted = remember(completedDates, workoutDates) {
         if (completedDates.isNotEmpty()) completedDates else workoutDates
@@ -775,121 +798,149 @@ fun WeekCalendarRow(
         plannedDates
     }
 
-    Row(
-        modifier = modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
-        verticalAlignment = Alignment.Top
-    ) {
-        daysOfWeek.forEach { date ->
-            val isSelected = date == selectedDate
-            val isToday = date == today
-            val isCompleted = date in effectiveCompleted
-            val isPlanned = date in effectivePlanned && !isCompleted
-            val dayName = Fmt.dayShort[(date.dayOfWeek.value - 1).coerceIn(0, 6)]
-            val dayNum = date.dayOfMonth.toString()
+    val baseStyle = LocalTextStyle.current
+    val weekdayStyle = baseStyle.copy(fontSize = 13.sp, fontWeight = FontWeight.Bold)
+    val numberStyle = baseStyle.copy(fontSize = 17.sp, fontWeight = FontWeight.ExtraBold)
+    val todayStyle = baseStyle.copy(fontSize = 10.sp, fontWeight = FontWeight.Medium)
+    val measurer = rememberTextMeasurer()
+    val density = LocalDensity.current
+    val weekdaySizes = Fmt.dayShort.map { measurer.measure(it, weekdayStyle, maxLines = 1).size }
+    val numberSizes = daysOfWeek.map { measurer.measure(it.dayOfMonth.toString(), numberStyle, maxLines = 1).size }
+    val minDayWidth = with(density) {
+        maxOf(weekdaySizes.maxOf { it.width }, numberSizes.maxOf { it.width }).toDp() + 2.dp
+    }
+    val todayIndex = daysOfWeek.indexOf(today)
+    val todayWidth = with(density) {
+        measurer.measure("сегодня", todayStyle, maxLines = 1).size.width.toDp() + 2.dp
+    }
+    val cardHeight = with(density) {
+        maxOf(76.dp, (weekdaySizes.maxOf { it.height } + numberSizes.maxOf { it.height }).toDp() + 34.dp)
+    }
+    val spacing = 4.dp
+    val totalSpacing = spacing * (daysOfWeek.size - 1)
+    BoxWithConstraints(modifier.fillMaxWidth()) {
+        val minWeekWidth = minDayWidth * daysOfWeek.size + totalSpacing
+        val weekWidth = maxOf(maxWidth, minWeekWidth)
+        val dayWidth = (weekWidth - totalSpacing) / daysOfWeek.size
+        val dayStride = dayWidth + spacing
+        val scroll = if (weekWidth > maxWidth) {
+            val selectedIndex = daysOfWeek.indexOf(selectedDate).coerceAtLeast(0)
+            val selectedEnd = dayStride * selectedIndex + dayWidth
+            Modifier.horizontalScroll(rememberScrollState(with(density) {
+                (selectedEnd - maxWidth).coerceAtLeast(0.dp).roundToPx()
+            }))
+        } else {
+            Modifier
+        }
+        Column(scroll.width(weekWidth)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(spacing)) {
+                daysOfWeek.forEach { date ->
+                    val isSelected = date == selectedDate
+                    val isToday = date == today
+                    val isCompleted = date in effectiveCompleted
+                    val isPlanned = date in effectivePlanned && !isCompleted
+                    val dayName = Fmt.dayShort[(date.dayOfWeek.value - 1).coerceIn(0, 6)]
+                    val dayNum = date.dayOfMonth.toString()
 
-            val cardShape = RoundedCornerShape(16.dp)
+                    val cardShape = RoundedCornerShape(16.dp)
 
-            var cardModifier = Modifier
-                .fillMaxWidth()
-                .height(76.dp)
-                .clip(cardShape)
-                .background(Color(0xFF1B1D25))
+                    var cardModifier = Modifier
+                        .fillMaxWidth()
+                        .height(cardHeight)
+                        .clip(cardShape)
+                        .background(DenTrainPalette.Panel)
 
-            when {
-                isSelected && showSelection -> {
-                    // Сине-голубая обводка при выборе (как на фото)
-                    cardModifier = cardModifier.border(BorderStroke(2.dp, selectionColor), cardShape)
-                }
-                isToday -> {
-                    cardModifier = cardModifier.border(BorderStroke(2.dp, Color.White), cardShape)
-                }
-                isCompleted -> {
-                    cardModifier = cardModifier.border(BorderStroke(1.5.dp, accentLime), cardShape)
-                }
-                isPlanned -> {
-                    cardModifier = cardModifier.dashedBorder(
-                        color = Color(0xFF686F82),
-                        shape = cardShape,
-                        strokeWidth = 1.5.dp,
-                        dashLength = 6.dp,
-                        gapLength = 4.dp
-                    )
-                }
-                else -> {
-                    cardModifier = cardModifier.border(BorderStroke(1.dp, Color(0xFF282B36)), cardShape)
-                }
-            }
-
-            Column(
-                modifier = Modifier.weight(1f),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Box(
-                    modifier = cardModifier
-                        .clickable {
-                            Haptic.click(context)
-                            onDateSelected(date)
+                    when {
+                        isSelected && showSelection -> {
+                            // Сине-голубая обводка при выборе (как на фото)
+                            cardModifier = cardModifier.border(BorderStroke(2.dp, selectionColor), cardShape)
                         }
-                        .padding(vertical = 8.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.SpaceBetween,
-                        modifier = Modifier.fillMaxHeight()
+                        isToday -> {
+                            cardModifier = cardModifier.border(BorderStroke(2.dp, Color.White), cardShape)
+                        }
+                        isCompleted -> {
+                            cardModifier = cardModifier.border(BorderStroke(1.5.dp, accentLime), cardShape)
+                        }
+                        isPlanned -> {
+                            cardModifier = cardModifier.dashedBorder(
+                                color = Color(0xFF686F82),
+                                shape = cardShape,
+                                strokeWidth = 1.5.dp,
+                                dashLength = 6.dp,
+                                gapLength = 4.dp
+                            )
+                        }
+                        else -> {
+                            cardModifier = cardModifier.border(BorderStroke(1.dp, DenTrainPalette.SubtleBorder), cardShape)
+                        }
+                    }
+
+                    Box(
+                        modifier = Modifier.weight(1f).then(cardModifier)
+                            .clickable {
+                                Haptic.click(context)
+                                onDateSelected(date)
+                            }
+                            .padding(vertical = 8.dp),
+                        contentAlignment = Alignment.Center
                     ) {
-                        // День недели (белым цветом для сегодняшнего дня)
-                        Text(
-                            text = dayName,
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = if (isToday) Color.White else Color(0xFFA0A0A8)
-                        )
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.SpaceBetween,
+                            modifier = Modifier.fillMaxHeight()
+                        ) {
+                            // День недели (белым цветом для сегодняшнего дня)
+                            Text(
+                                text = dayName,
+                                style = weekdayStyle,
+                                color = if (isToday) Color.White else Color(0xFFA0A0A8)
+                            )
 
-                        // Число
-                        Text(
-                            text = dayNum,
-                            fontSize = 17.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            color = Color.White
-                        )
+                            // Число
+                            Text(
+                                text = dayNum,
+                                style = numberStyle,
+                                color = Color.White
+                            )
 
-                        // Иконка
-                        when {
-                            isCompleted -> {
-                                Icon(
-                                    imageVector = Icons.Filled.Check,
-                                    contentDescription = "Выполнено",
-                                    tint = accentLime,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                            }
-                            isPlanned -> {
-                                Icon(
-                                    imageVector = Icons.Filled.FitnessCenter,
-                                    contentDescription = "Запланировано",
-                                    tint = Color(0xFFA0A7B8),
-                                    modifier = Modifier.size(13.dp)
-                                )
-                            }
-                            else -> {
-                                Spacer(Modifier.height(14.dp))
+                            // Иконка
+                            when {
+                                isCompleted -> {
+                                    Icon(
+                                        imageVector = Icons.Filled.Check,
+                                        contentDescription = "Выполнено",
+                                        tint = accentLime,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
+                                isPlanned -> {
+                                    Icon(
+                                        imageVector = Icons.Filled.FitnessCenter,
+                                        contentDescription = "Запланировано",
+                                        tint = DenTrainPalette.MutedText,
+                                        modifier = Modifier.size(13.dp)
+                                    )
+                                }
+                                else -> {
+                                    Spacer(Modifier.height(14.dp))
+                                }
                             }
                         }
                     }
                 }
-
-                // Оставили только слово "сегодня", подняли повыше
-                if (isToday) {
-                    Text(
-                        text = "сегодня",
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = Color.White,
-                        modifier = Modifier.padding(top = 1.dp)
-                    )
-                }
+            }
+            if (todayIndex >= 0) {
+                val labelStart = dayStride * todayIndex + (dayWidth - todayWidth) / 2
+                Text(
+                    text = "сегодня",
+                    style = todayStyle,
+                    color = Color.White,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier
+                        .offset(x = labelStart.coerceIn(0.dp, (weekWidth - todayWidth).coerceAtLeast(0.dp)))
+                        .width(todayWidth)
+                        .padding(top = 1.dp)
+                )
             }
         }
     }
@@ -910,17 +961,24 @@ fun UserProfilePanel(
     athleteTrainerUid: String? = null,
     athleteHasTrainer: Boolean = false,
     userWorkouts: List<AssignedWorkoutModel> = emptyList(),
-    isLoadingWorkouts: Boolean = false
+    isLoadingWorkouts: Boolean = false,
+    onDetachStudent: (() -> Unit)? = null
 ) {
     var showDeleteConfirmDialog by remember { mutableStateOf(false) }
-    val decodedBitmap = remember(user.avatarBase64) {
-        if (user.avatarBase64.isNotBlank()) {
-            try {
-                val bytes = Base64.decode(user.avatarBase64, Base64.DEFAULT)
-                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-            } catch (e: Exception) { null }
-        } else null
+    var showDetachConfirm by remember(user.uid) { mutableStateOf(false) }
+    if (showDetachConfirm && onDetachStudent != null) {
+        ConfirmDialog(
+            title = "Открепить ученика?",
+            text = "После открепления вы потеряете доступ к тренировкам ${user.nickname}.",
+            confirmText = "Открепить",
+            onConfirm = {
+                showDetachConfirm = false
+                onDetachStudent()
+            },
+            onDismiss = { showDetachConfirm = false }
+        )
     }
+    val decodedBitmap = rememberAvatarBitmap(user.avatarBase64)
 
     val ageText = remember(user.dobEpochDay) {
         if (user.dobEpochDay != null) {
@@ -948,6 +1006,11 @@ fun UserProfilePanel(
             title = if (user.username.isNotBlank()) "@${user.username}" else user.nickname,
             onBack = onBack,
             actions = {
+                if (onDetachStudent != null) {
+                    TextButton(onClick = { showDetachConfirm = true }) {
+                        Text("Открепить", color = DenTrainPalette.Error)
+                    }
+                }
                 if (onEdit != null) {
                     IconButton(onClick = onEdit) {
                         Icon(Icons.Filled.Edit, "Редактировать", tint = Color.White)
@@ -955,7 +1018,7 @@ fun UserProfilePanel(
                 }
                 if (onDelete != null && user.uid != currentUserId) {
                     IconButton(onClick = { showDeleteConfirmDialog = true }) {
-                        Icon(Icons.Filled.Delete, "Удалить аккаунт", tint = Color(0xFFFF5252))
+                        Icon(Icons.Filled.Delete, "Удалить аккаунт", tint = DenTrainPalette.Error)
                     }
                 }
             }
@@ -981,7 +1044,7 @@ fun UserProfilePanel(
                     val avatarModifier = Modifier
                         .size(80.dp)
                         .clip(CircleShape)
-                        .background(Color(0xFF242732))
+                        .background(DenTrainPalette.RaisedPanel)
                         .border(2.dp, avatarBorderColor, CircleShape)
 
                     if (decodedBitmap != null) {
@@ -1011,7 +1074,7 @@ fun UserProfilePanel(
                         Text(
                             text = "@${user.username}",
                             style = MaterialTheme.typography.bodyMedium,
-                            color = Color(0xFFA0A7B8)
+                            color = DenTrainPalette.MutedText
                         )
                     }
 
@@ -1025,7 +1088,7 @@ fun UserProfilePanel(
                                     .background(avatarBorderColor.copy(alpha = 0.2f))
                                     .padding(horizontal = 10.dp, vertical = 4.dp)
                             ) {
-                                Text(user.role.uppercase(), color = avatarBorderColor, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                Text(if (user.role == "admin") "Администратор · Тренер" else "Тренер", color = avatarBorderColor, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                             }
                         }
 
@@ -1076,7 +1139,7 @@ fun UserProfilePanel(
             }
 
             // Записаться к тренеру / Статус тренера
-            if ((user.role == "trainer" || user.role == "admin") && user.uid != currentUserId) {
+            if (viewerRole == "athlete" && (user.role == "trainer" || user.role == "admin") && user.uid != currentUserId) {
                 Spacer(Modifier.height(16.dp))
                 when {
                     user.uid == athleteTrainerUid -> {
@@ -1097,7 +1160,7 @@ fun UserProfilePanel(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(16.dp))
-                                .background(Color(0xFF242732))
+                                .background(DenTrainPalette.RaisedPanel)
                                 .border(1.dp, Color.Gray, RoundedCornerShape(16.dp))
                                 .padding(16.dp),
                             contentAlignment = Alignment.Center
@@ -1139,13 +1202,20 @@ fun UserProfilePanel(
                 }
             }
 
-            val assignedList = userWorkouts.filter { !it.isCompleted }.sortedBy { it.dateEpochDay }
-            val historyList = userWorkouts.filter { it.isCompleted }.sortedByDescending { it.dateEpochDay }
+            val workouts = userWorkouts.filter { it.athleteUid == user.uid }
+            val assignedList = workouts.filter { !it.isCompleted }.sortedBy { it.dateEpochDay }
+            val historyList = workouts.filter { it.isCompleted }.sortedByDescending { it.dateEpochDay }
+
+            val canViewWorkouts = viewerRole == "admin" ||
+                (viewerRole == "trainer" && currentUserId != null && user.trainerUid == currentUserId)
 
             // Назначенные тренировки
-            if (viewerRole == "admin" || viewerRole == "trainer" || user.uid == currentUserId) {
+            if (canViewWorkouts) {
                 Spacer(Modifier.height(16.dp))
                 SectionTitle("Назначенные тренировки (${assignedList.size})")
+                if (viewerRole == "admin" && !isLoadingWorkouts) {
+                    Text("Всего назначено: ${workouts.size}", color = DenTrainPalette.MutedText)
+                }
                 Spacer(Modifier.height(8.dp))
 
                 if (isLoadingWorkouts) {
@@ -1164,10 +1234,10 @@ fun UserProfilePanel(
                 }
             }
 
-            // История тренировок (Только для админов/тренеров или своего профиля)
-            if (viewerRole == "admin" || viewerRole == "trainer" || user.uid == currentUserId) {
+            // История назначений
+            if (canViewWorkouts) {
                 Spacer(Modifier.height(16.dp))
-                SectionTitle("История тренировок (${historyList.size})")
+                SectionTitle("История назначенных тренировок (${historyList.size})")
                 Spacer(Modifier.height(8.dp))
 
                 if (isLoadingWorkouts) {
@@ -1190,89 +1260,15 @@ fun UserProfilePanel(
         }
     }
 
-    if (showDeleteConfirmDialog && onDelete != null) {
-        val securityCode = remember { (1000..9999).random().toString() }
-        var inputCode by remember { mutableStateOf("") }
-        val isCodeValid = inputCode.trim() == securityCode
-        val targetUsername = if (user.username.isNotBlank()) "@${user.username}" else user.nickname
-
-        AlertDialog(
-            onDismissRequest = { showDeleteConfirmDialog = false },
-            title = {
-                Text(
-                    text = "Удаление аккаунта $targetUsername",
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.error,
-                    fontSize = 18.sp
-                )
+    if (showDeleteConfirmDialog) {
+        val target = if (user.username.isNotBlank()) "@${user.username}" else user.nickname
+        DeleteProfileDialog(
+            target = target,
+            onDelete = {
+                showDeleteConfirmDialog = false
+                onDelete?.invoke()
             },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text(
-                        text = "Внимание! Это действие безвозвратно удалит аккаунт $targetUsername и все связанные данные.",
-                        color = Color.White,
-                        fontSize = 14.sp
-                    )
-                    Text(
-                        text = "Введите 4-значный код подтверждения:",
-                        color = Color.Gray,
-                        fontSize = 13.sp
-                    )
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(Color(0xFF242732))
-                            .border(1.dp, Color(0xFFFFC107), RoundedCornerShape(12.dp))
-                            .padding(12.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = securityCode.toCharArray().joinToString(" "),
-                            fontSize = 24.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            color = Color(0xFFFFC107),
-                            letterSpacing = 4.sp
-                        )
-                    }
-                    OutlinedTextField(
-                        value = inputCode,
-                        onValueChange = { if (it.length <= 4) inputCode = it },
-                        label = { Text("Введите код") },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = Color.White,
-                            unfocusedTextColor = Color.White,
-                            focusedBorderColor = Color(0xFFA6FF00),
-                            unfocusedBorderColor = Color(0xFF333644)
-                        )
-                    )
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        if (isCodeValid) {
-                            showDeleteConfirmDialog = false
-                            onDelete()
-                        }
-                    },
-                    enabled = isCodeValid,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.error,
-                        disabledContainerColor = Color(0xFF333644)
-                    )
-                ) {
-                    Text("Удалить аккаунт", fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showDeleteConfirmDialog = false }) {
-                    Text("Отмена", color = Color.Gray)
-                }
-            }
+            onDismiss = { showDeleteConfirmDialog = false }
         )
     }
 }
@@ -1322,8 +1318,8 @@ private fun AssignEditorCard(
         modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
-            .background(Color(0xFF1B1D25))
-            .border(BorderStroke(1.dp, Color(0xFF282B36)), RoundedCornerShape(16.dp))
+            .background(DenTrainPalette.Panel)
+            .border(BorderStroke(1.dp, DenTrainPalette.SubtleBorder), RoundedCornerShape(16.dp))
             .padding(16.dp)
     ) {
         Column(
@@ -1333,18 +1329,113 @@ private fun AssignEditorCard(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun assignCustomTfColors(isFilled: Boolean, hasError: Boolean = false) = OutlinedTextFieldDefaults.colors(
-    focusedContainerColor = Color(0xFF1B1D25),
-    unfocusedContainerColor = Color(0xFF1B1D25),
-    focusedBorderColor = if (hasError) Color(0xFFFF5252) else Color(0xFFA6FF00),
-    unfocusedBorderColor = if (hasError) Color(0xFFFF5252) else if (isFilled) Color.White else Color(0xFF333644),
-    focusedLabelColor = if (hasError) Color(0xFFFF5252) else Color(0xFFA6FF00),
-    unfocusedLabelColor = if (hasError) Color(0xFFFF5252) else if (isFilled) Color(0xFFE0E0E6) else Color(0xFFA0A7B8),
+internal fun WorkoutDateSelector(dayName: String, dateText: String, epochDay: Long, onDateChange: (Long) -> Unit) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.padding(top = 2.dp, bottom = 12.dp)
+    ) {
+        Text(
+            text = dayName,
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Bold,
+            color = DenTrainPalette.Lime
+        )
+        Text(
+            text = ",",
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Bold,
+            color = Color.White
+        )
+        Spacer(Modifier.width(6.dp))
+
+        var showDatePicker by remember { mutableStateOf(false) }
+
+        Box(
+            modifier = Modifier
+                .clip(CircleShape)
+                .background(DenTrainPalette.RaisedPanel)
+                .border(BorderStroke(1.dp, DenTrainPalette.Border), CircleShape)
+                .clickable { showDatePicker = true }
+                .padding(horizontal = 10.dp, vertical = 4.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Icon(
+                    Icons.Filled.CalendarMonth,
+                    contentDescription = "Выбрать дату",
+                    tint = DenTrainPalette.Lime,
+                    modifier = Modifier.size(13.dp)
+                )
+                Text(
+                    text = dateText,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = Color.White
+                )
+            }
+        }
+
+        if (showDatePicker) {
+            val datePickerState = rememberDatePickerState(initialSelectedDateMillis = epochDay * 86_400_000L)
+            DatePickerDialog(
+                onDismissRequest = { showDatePicker = false },
+                confirmButton = {
+                    TextButton(onClick = {
+                        datePickerState.selectedDateMillis?.let { onDateChange(Math.floorDiv(it, 86_400_000L)) }
+                        showDatePicker = false
+                    }) { Text("OK", color = DenTrainPalette.Lime) }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showDatePicker = false }) {
+                        Text("Отмена", color = DenTrainPalette.MutedText)
+                    }
+                }
+            ) {
+                DatePicker(state = datePickerState)
+            }
+        }
+    }
+}
+
+@Composable
+internal fun workoutFieldColors(isFilled: Boolean, hasError: Boolean = false) = OutlinedTextFieldDefaults.colors(
+    focusedContainerColor = DenTrainPalette.Panel,
+    unfocusedContainerColor = DenTrainPalette.Panel,
+    focusedBorderColor = if (hasError) DenTrainPalette.Error else DenTrainPalette.Lime,
+    unfocusedBorderColor = if (hasError) DenTrainPalette.Error else if (isFilled) Color.White else DenTrainPalette.Border,
+    focusedLabelColor = if (hasError) DenTrainPalette.Error else DenTrainPalette.Lime,
+    unfocusedLabelColor = if (hasError) DenTrainPalette.Error else if (isFilled) Color(0xFFE0E0E6) else DenTrainPalette.MutedText,
     focusedTextColor = Color.White,
     unfocusedTextColor = Color.White,
-    cursorColor = if (hasError) Color(0xFFFF5252) else Color(0xFFA6FF00)
+    cursorColor = if (hasError) DenTrainPalette.Error else DenTrainPalette.Lime
 )
+
+@Composable
+internal fun EditorTextField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    label: String,
+    modifier: Modifier = Modifier,
+    singleLine: Boolean = true,
+    hasError: Boolean = false,
+    keyboardOptions: KeyboardOptions = KeyboardOptions.Default
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        label = { Text(label) },
+        modifier = modifier.fillMaxWidth(),
+        singleLine = singleLine,
+        minLines = if (singleLine) 1 else 2,
+        keyboardOptions = keyboardOptions,
+        colors = workoutFieldColors(value.isNotBlank(), hasError),
+        shape = RoundedCornerShape(12.dp)
+    )
+}
 
 /** Полноэкранная панель назначения тренировки ученику (дизайн как у WorkoutEditorScreen) */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
@@ -1400,6 +1491,37 @@ fun AssignWorkoutPanel(
                 )
             }
         }
+    }
+
+    fun exerciseValues() = exercises.map { listOf(it.name, it.sets, it.reps, it.weight) }
+    val originalExercises = remember { exerciseValues() }
+    var showDiscard by remember { mutableStateOf(false) }
+    var pendingAssignment by remember { mutableStateOf<List<AssignedExerciseModel>?>(null) }
+    val handleBack = {
+        val changed = workoutTitle != initialTitle || workoutDescription != initialDescription ||
+            epochDay != initialDateEpochDay || exerciseValues() != originalExercises
+        if (changed) showDiscard = true else onBack()
+    }
+    BackHandler(onBack = handleBack)
+    if (showDiscard) {
+        DiscardChangesDialog(
+            onDiscard = { showDiscard = false; onBack() },
+            onDismiss = { showDiscard = false }
+        )
+    }
+
+    pendingAssignment?.let { plan ->
+        ConfirmDialog(
+            title = "Назначить тренировку?",
+            text = "Тренировка «${workoutTitle.trim()}» появится в плане спортсмена «$athleteName».",
+            confirmText = "Назначить",
+            destructive = false,
+            onConfirm = {
+                pendingAssignment = null
+                onAssign(workoutTitle.trim(), epochDay, workoutDescription.trim(), plan)
+            },
+            onDismiss = { pendingAssignment = null }
+        )
     }
 
     val focusManager = LocalFocusManager.current
@@ -1491,6 +1613,11 @@ fun AssignWorkoutPanel(
                 }
                 return
             }
+            val weight = Fmt.parseWeight(e.weight)
+            if (e.weight.isNotBlank() && (weight == null || !weight.isFinite() || weight < 0)) {
+                error = "Упражнение $n: укажите вес числом от 0 или оставьте поле пустым."
+                return
+            }
         }
 
         error = null
@@ -1503,7 +1630,7 @@ fun AssignWorkoutPanel(
                 plannedWeight = weight
             )
         }
-        onAssign(workoutTitle.trim(), epochDay, workoutDescription.trim(), assignedList)
+        pendingAssignment = assignedList
     }
 
     Column(
@@ -1514,7 +1641,7 @@ fun AssignWorkoutPanel(
     ) {
         ScreenHeader(
             title = "Назначение тренировки",
-            onBack = onBack
+            onBack = handleBack
         )
 
         val tfShape = RoundedCornerShape(12.dp)
@@ -1533,7 +1660,7 @@ fun AssignWorkoutPanel(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(16.dp))
-                        .background(Color(0xFF1B1D25))
+                        .background(DenTrainPalette.Panel)
                         .border(1.dp, Color(0xFFFFC107), RoundedCornerShape(16.dp))
                         .padding(16.dp)
                 ) {
@@ -1565,78 +1692,12 @@ fun AssignWorkoutPanel(
                     }
                     val dayName = remember(dayOfWeek) { Fmt.dayName(dayOfWeek) }
 
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(top = 2.dp, bottom = 12.dp)
-                    ) {
-                        Text(
-                            text = dayName,
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color(0xFFA6FF00)
-                        )
-                        Text(
-                            text = ",",
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White
-                        )
-                        Spacer(Modifier.width(6.dp))
-
-                        var showDatePicker by remember { mutableStateOf(false) }
-
-                        Box(
-                            modifier = Modifier
-                                .clip(CircleShape)
-                                .background(Color(0xFF242732))
-                                .border(BorderStroke(1.dp, Color(0xFF333644)), CircleShape)
-                                .clickable { showDatePicker = true }
-                                .padding(horizontal = 10.dp, vertical = 4.dp)
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
-                            ) {
-                                Icon(
-                                    Icons.Filled.CalendarMonth,
-                                    contentDescription = "Выбрать дату",
-                                    tint = Color(0xFFA6FF00),
-                                    modifier = Modifier.size(13.dp)
-                                )
-                                Text(
-                                    text = dateText,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    color = Color.White
-                                )
-                            }
-                        }
-
-                        if (showDatePicker) {
-                            val datePickerState = rememberDatePickerState(initialSelectedDateMillis = epochDay * 86_400_000L)
-                            DatePickerDialog(
-                                onDismissRequest = { showDatePicker = false },
-                                confirmButton = {
-                                    TextButton(onClick = {
-                                        datePickerState.selectedDateMillis?.let { changeDate(Math.floorDiv(it, 86_400_000L)) }
-                                        showDatePicker = false
-                                    }) { Text("OK", color = Color(0xFFA6FF00)) }
-                                },
-                                dismissButton = {
-                                    TextButton(onClick = { showDatePicker = false }) {
-                                        Text("Отмена", color = Color(0xFFA0A7B8))
-                                    }
-                                }
-                            ) {
-                                DatePicker(state = datePickerState)
-                            }
-                        }
-                    }
+                    WorkoutDateSelector(dayName, dateText, epochDay, ::changeDate)
 
                     if (titleError != null) {
                         Text(
                             text = titleError!!,
-                            color = Color(0xFFFF5252),
+                            color = DenTrainPalette.Error,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier.padding(bottom = 4.dp)
@@ -1655,13 +1716,13 @@ fun AssignWorkoutPanel(
                         modifier = Modifier
                             .fillMaxWidth()
                             .focusRequester(titleFocusRequester),
-                        colors = assignCustomTfColors(isFilled = workoutTitle.isNotBlank(), hasError = titleError != null),
+                        colors = workoutFieldColors(isFilled = workoutTitle.isNotBlank(), hasError = titleError != null),
                         shape = tfShape
                     )
 
                     Spacer(Modifier.height(12.dp))
 
-                    Text("День недели", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = Color(0xFFA0A7B8))
+                    Text("День недели", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = DenTrainPalette.MutedText)
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -1675,11 +1736,11 @@ fun AssignWorkoutPanel(
                                     .weight(1f)
                                     .height(40.dp)
                                     .clip(RoundedCornerShape(10.dp))
-                                    .background(Color(0xFF242732))
+                                    .background(DenTrainPalette.RaisedPanel)
                                     .border(
                                         BorderStroke(
                                             if (selected) 1.5.dp else 1.dp,
-                                            if (selected) Color(0xFFA6FF00) else Color(0xFF333644)
+                                            if (selected) DenTrainPalette.Lime else DenTrainPalette.Border
                                         ),
                                         RoundedCornerShape(10.dp)
                                     )
@@ -1690,7 +1751,7 @@ fun AssignWorkoutPanel(
                                     text = name,
                                     fontSize = 14.sp,
                                     fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                                    color = if (selected) Color.White else Color(0xFFA0A7B8)
+                                    color = if (selected) Color.White else DenTrainPalette.MutedText
                                 )
                             }
                         }
@@ -1705,7 +1766,7 @@ fun AssignWorkoutPanel(
                         modifier = Modifier.fillMaxWidth(),
                         minLines = 2,
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                        colors = assignCustomTfColors(isFilled = workoutDescription.isNotBlank()),
+                        colors = workoutFieldColors(isFilled = workoutDescription.isNotBlank()),
                         shape = tfShape
                     )
                 }
@@ -1771,7 +1832,7 @@ fun AssignWorkoutPanel(
                                 Icon(
                                     Icons.Filled.Delete,
                                     "Удалить",
-                                    tint = Color(0xFFFF5252),
+                                    tint = DenTrainPalette.Error,
                                     modifier = Modifier.size(20.dp)
                                 )
                             }
@@ -1783,7 +1844,7 @@ fun AssignWorkoutPanel(
                     if (e.nameError != null) {
                         Text(
                             text = e.nameError!!,
-                            color = Color(0xFFFF5252),
+                            color = DenTrainPalette.Error,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier.padding(bottom = 4.dp)
@@ -1802,7 +1863,7 @@ fun AssignWorkoutPanel(
                             .fillMaxWidth()
                             .focusRequester(nameFocus)
                             .onFocusChanged { isNameFocused = it.isFocused },
-                        colors = assignCustomTfColors(isFilled = e.name.isNotBlank(), hasError = e.nameError != null),
+                        colors = workoutFieldColors(isFilled = e.name.isNotBlank(), hasError = e.nameError != null),
                         shape = tfShape
                     )
 
@@ -1833,11 +1894,11 @@ fun AssignWorkoutPanel(
                                     modifier = Modifier
                                         .animateItem()
                                         .clip(RoundedCornerShape(10.dp))
-                                        .background(if (isSel) Color(0xFF2A2415) else Color(0xFF242732))
+                                        .background(if (isSel) Color(0xFF2A2415) else DenTrainPalette.RaisedPanel)
                                         .border(
                                             BorderStroke(
                                                 if (isSel) 1.5.dp else 1.dp,
-                                                if (isSel) Color(0xFFFFB300) else Color(0xFF333644)
+                                                if (isSel) Color(0xFFFFB300) else DenTrainPalette.Border
                                             ),
                                             RoundedCornerShape(10.dp)
                                         )
@@ -1848,7 +1909,7 @@ fun AssignWorkoutPanel(
                                         text = item,
                                         fontSize = 12.sp,
                                         fontWeight = if (isSel) FontWeight.Bold else FontWeight.Medium,
-                                        color = if (isSel) Color(0xFFFFD54F) else Color(0xFFA0A7B8)
+                                        color = if (isSel) Color(0xFFFFD54F) else DenTrainPalette.MutedText
                                     )
                                 }
                             }
@@ -1860,7 +1921,7 @@ fun AssignWorkoutPanel(
                     if (e.setsError != null) {
                         Text(
                             text = e.setsError!!,
-                            color = Color(0xFFFF5252),
+                            color = DenTrainPalette.Error,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier.padding(bottom = 4.dp)
@@ -1877,7 +1938,7 @@ fun AssignWorkoutPanel(
                             modifier = Modifier
                                 .weight(1f)
                                 .focusRequester(setsFocus),
-                            colors = assignCustomTfColors(isFilled = e.sets.isNotBlank(), hasError = e.setsError != null),
+                            colors = workoutFieldColors(isFilled = e.sets.isNotBlank(), hasError = e.setsError != null),
                             shape = tfShape
                         )
 
@@ -1889,7 +1950,7 @@ fun AssignWorkoutPanel(
                                 singleLine = true,
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal, imeAction = ImeAction.Next),
                                 modifier = Modifier.weight(1f),
-                                colors = assignCustomTfColors(isFilled = e.weight.isNotBlank()),
+                                colors = workoutFieldColors(isFilled = e.weight.isNotBlank()),
                                 shape = tfShape
                             )
                             OutlinedTextField(
@@ -1899,7 +1960,7 @@ fun AssignWorkoutPanel(
                                 singleLine = true,
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
                                 modifier = Modifier.weight(1f),
-                                colors = assignCustomTfColors(isFilled = e.reps.isNotBlank()),
+                                colors = workoutFieldColors(isFilled = e.reps.isNotBlank()),
                                 shape = tfShape
                             )
                         } else {
@@ -1910,7 +1971,7 @@ fun AssignWorkoutPanel(
                                 singleLine = true,
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Next),
                                 modifier = Modifier.weight(1f),
-                                colors = assignCustomTfColors(isFilled = e.reps.isNotBlank()),
+                                colors = workoutFieldColors(isFilled = e.reps.isNotBlank()),
                                 shape = tfShape
                             )
                             OutlinedTextField(
@@ -1920,7 +1981,7 @@ fun AssignWorkoutPanel(
                                 singleLine = true,
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal, imeAction = ImeAction.Done),
                                 modifier = Modifier.weight(1f),
-                                colors = assignCustomTfColors(isFilled = e.weight.isNotBlank()),
+                                colors = workoutFieldColors(isFilled = e.weight.isNotBlank()),
                                 shape = tfShape
                             )
                         }
@@ -1935,8 +1996,8 @@ fun AssignWorkoutPanel(
                         .fillMaxWidth()
                         .height(54.dp)
                         .clip(RoundedCornerShape(16.dp))
-                        .background(Color(0xFF1B1D25))
-                        .border(BorderStroke(1.dp, Color(0xFF282B36)), RoundedCornerShape(16.dp))
+                        .background(DenTrainPalette.Panel)
+                        .border(BorderStroke(1.dp, DenTrainPalette.SubtleBorder), RoundedCornerShape(16.dp))
                         .clickable { addExercise() },
                     contentAlignment = Alignment.Center
                 ) {
@@ -1944,13 +2005,13 @@ fun AssignWorkoutPanel(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.Center
                     ) {
-                        Icon(Icons.Filled.Add, contentDescription = null, tint = Color(0xFFA6FF00))
+                        Icon(Icons.Filled.Add, contentDescription = null, tint = DenTrainPalette.Lime)
                         Spacer(Modifier.width(8.dp))
                         Text(
                             "Добавить упражнение",
                             fontWeight = FontWeight.Bold,
                             fontSize = 15.sp,
-                            color = Color(0xFFA6FF00)
+                            color = DenTrainPalette.Lime
                         )
                     }
                 }
@@ -1963,14 +2024,14 @@ fun AssignWorkoutPanel(
                         .fillMaxWidth()
                         .height(54.dp)
                         .clip(RoundedCornerShape(16.dp))
-                        .background(Color(0xFF1B1D25))
-                        .border(BorderStroke(1.dp, Color(0xFFA6FF00)), RoundedCornerShape(16.dp))
+                        .background(DenTrainPalette.Panel)
+                        .border(BorderStroke(1.dp, DenTrainPalette.Lime), RoundedCornerShape(16.dp))
                         .clickable { validateAndAssign() },
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        "Назначить тренировку",
-                        color = Color(0xFFA6FF00),
+                        "Отправить тренировку",
+                        color = DenTrainPalette.Lime,
                         fontWeight = FontWeight.Bold,
                         fontSize = 16.sp
                     )
@@ -1986,7 +2047,7 @@ fun AssignedWorkoutDetailPanel(
     workout: AssignedWorkoutModel,
     user: AdminUserModel,
     onBack: () -> Unit,
-    onReassign: () -> Unit
+    onReassign: (() -> Unit)? = null
 ) {
     val dateText = remember(workout.dateEpochDay) {
         val date = LocalDate.ofEpochDay(workout.dateEpochDay)
@@ -2024,12 +2085,12 @@ fun AssignedWorkoutDetailPanel(
                 Box(
                     modifier = Modifier
                         .clip(CircleShape)
-                        .background(Color(0xFF242732))
-                        .border(BorderStroke(1.dp, Color(0xFFA6FF00)), CircleShape)
+                        .background(DenTrainPalette.RaisedPanel)
+                        .border(BorderStroke(1.dp, DenTrainPalette.Lime), CircleShape)
                         .padding(horizontal = 14.dp, vertical = 5.dp)
                 ) {
                     Text(
-                        text = "Режим просмотра",
+                        text = workout.deliveryState?.label ?: "Режим просмотра",
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold,
                         color = Color.White
@@ -2042,8 +2103,8 @@ fun AssignedWorkoutDetailPanel(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(16.dp))
-                    .background(Color(0xFF1B1D25))
-                    .border(BorderStroke(1.dp, Color(0xFF282B36)), RoundedCornerShape(16.dp))
+                    .background(DenTrainPalette.Panel)
+                    .border(BorderStroke(1.dp, DenTrainPalette.SubtleBorder), RoundedCornerShape(16.dp))
                     .padding(16.dp)
             ) {
                 Column {
@@ -2061,13 +2122,13 @@ fun AssignedWorkoutDetailPanel(
                             text = dayName,
                             fontSize = 15.sp,
                             fontWeight = FontWeight.Bold,
-                            color = Color(0xFFA6FF00)
+                            color = DenTrainPalette.Lime
                         )
                         Text(
                             text = ", $dateText",
                             fontSize = 15.sp,
                             fontWeight = FontWeight.Medium,
-                            color = Color(0xFFA0A7B8)
+                            color = DenTrainPalette.MutedText
                         )
                     }
 
@@ -2089,7 +2150,7 @@ fun AssignedWorkoutDetailPanel(
                         Box(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(8.dp))
-                                .background(Color(0xFF242732))
+                                .background(DenTrainPalette.RaisedPanel)
                                 .border(BorderStroke(1.dp, Color.White), RoundedCornerShape(8.dp))
                                 .padding(horizontal = 10.dp, vertical = 5.dp)
                         ) {
@@ -2104,7 +2165,7 @@ fun AssignedWorkoutDetailPanel(
                         Box(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(8.dp))
-                                .background(Color(0xFF242732))
+                                .background(DenTrainPalette.RaisedPanel)
                                 .border(BorderStroke(1.dp, Color.White), RoundedCornerShape(8.dp))
                                 .padding(horizontal = 10.dp, vertical = 5.dp)
                         ) {
@@ -2124,7 +2185,7 @@ fun AssignedWorkoutDetailPanel(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(12.dp))
-                                .background(Color(0xFF242732))
+                                .background(DenTrainPalette.RaisedPanel)
                                 .border(BorderStroke(1.5.dp, Color(0xFFFFB300)), RoundedCornerShape(12.dp))
                                 .padding(12.dp)
                         ) {
@@ -2154,8 +2215,8 @@ fun AssignedWorkoutDetailPanel(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(16.dp))
-                        .background(Color(0xFF1B1D25))
-                        .border(BorderStroke(1.dp, Color(0xFF282B36)), RoundedCornerShape(16.dp))
+                        .background(DenTrainPalette.Panel)
+                        .border(BorderStroke(1.dp, DenTrainPalette.SubtleBorder), RoundedCornerShape(16.dp))
                         .padding(16.dp)
                 ) {
                     Column {
@@ -2177,15 +2238,15 @@ fun AssignedWorkoutDetailPanel(
                             Box(
                                 modifier = Modifier
                                     .clip(CircleShape)
-                                    .background(Color(0xFF242732))
-                                    .border(BorderStroke(1.dp, Color(0xFF333644)), CircleShape)
+                                    .background(DenTrainPalette.RaisedPanel)
+                                    .border(BorderStroke(1.dp, DenTrainPalette.Border), CircleShape)
                                     .padding(horizontal = 10.dp, vertical = 4.dp)
                             ) {
                                 Text(
                                     text = "В планах ${ex.plannedSets} подх.",
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.Medium,
-                                    color = Color(0xFFA0A7B8)
+                                    color = DenTrainPalette.MutedText
                                 )
                             }
                         }
@@ -2199,14 +2260,14 @@ fun AssignedWorkoutDetailPanel(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .clip(RoundedCornerShape(12.dp))
-                                        .background(Color(0xFF242732))
-                                        .border(BorderStroke(1.dp, Color(0xFF333644)), RoundedCornerShape(12.dp))
+                                        .background(DenTrainPalette.RaisedPanel)
+                                        .border(BorderStroke(1.dp, DenTrainPalette.Border), RoundedCornerShape(12.dp))
                                         .padding(horizontal = 12.dp, vertical = 10.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Text(
                                         text = "№ $setNum",
-                                        color = Color(0xFFA0A7B8),
+                                        color = DenTrainPalette.MutedText,
                                         fontSize = 14.sp,
                                         fontWeight = FontWeight.Medium
                                     )
@@ -2214,13 +2275,13 @@ fun AssignedWorkoutDetailPanel(
                                     if (ex.plannedWeight != null && ex.plannedWeight > 0) {
                                         Text(
                                             text = "${Fmt.weight(ex.plannedWeight)} кг",
-                                            color = Color(0xFFA6FF00),
+                                            color = DenTrainPalette.Lime,
                                             fontWeight = FontWeight.ExtraBold,
                                             fontSize = 16.sp
                                         )
                                         Text(
                                             text = " | ",
-                                            color = Color(0xFF333644),
+                                            color = DenTrainPalette.Border,
                                             fontSize = 16.sp,
                                             fontWeight = FontWeight.Bold
                                         )
@@ -2239,12 +2300,12 @@ fun AssignedWorkoutDetailPanel(
             }
 
             // Кнопка действий: Назначить снова (без кнопок Закрепить и Изменить)
-            Box(
+            if (onReassign != null) Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(16.dp))
-                    .background(Color(0xFF1B1D25))
-                    .border(BorderStroke(1.dp, Color(0xFFA6FF00)), RoundedCornerShape(16.dp))
+                    .background(DenTrainPalette.Panel)
+                    .border(BorderStroke(1.dp, DenTrainPalette.Lime), RoundedCornerShape(16.dp))
                     .clickable { onReassign() }
                     .padding(16.dp),
                 contentAlignment = Alignment.Center
@@ -2256,12 +2317,12 @@ fun AssignedWorkoutDetailPanel(
                     Icon(
                         imageVector = Icons.Filled.ContentCopy,
                         contentDescription = null,
-                        tint = Color(0xFFA6FF00),
+                        tint = DenTrainPalette.Lime,
                         modifier = Modifier.size(20.dp)
                     )
                     Text(
                         text = "Назначить снова",
-                        color = Color(0xFFA6FF00),
+                        color = DenTrainPalette.Lime,
                         fontWeight = FontWeight.Bold,
                         fontSize = 17.sp
                     )
@@ -2315,9 +2376,9 @@ fun AdminEditUserPanel(
             return buildAnnotatedString {
                 withStyle(SpanStyle(fontWeight = FontWeight.Bold, color = Color.White)) { append("$field: ") }
                 append("с ")
-                withStyle(SpanStyle(fontWeight = FontWeight.Bold, color = Color(0xFFA0A7B8))) { append("\"$oldVal\"") }
+                withStyle(SpanStyle(fontWeight = FontWeight.Bold, color = DenTrainPalette.MutedText)) { append("\"$oldVal\"") }
                 append(" на ")
-                withStyle(SpanStyle(fontWeight = FontWeight.Bold, color = Color(0xFFA6FF00))) { append("\"$newVal\"") }
+                withStyle(SpanStyle(fontWeight = FontWeight.Bold, color = DenTrainPalette.Lime)) { append("\"$newVal\"") }
             }
         }
 
@@ -2370,7 +2431,7 @@ fun AdminEditUserPanel(
             actions = {
                 if (onDelete != null) {
                     IconButton(onClick = { showDeleteConfirmDialog = true }) {
-                        Icon(Icons.Filled.Delete, "Удалить аккаунт", tint = Color(0xFFFF5252))
+                        Icon(Icons.Filled.Delete, "Удалить аккаунт", tint = DenTrainPalette.Error)
                     }
                 }
             }
@@ -2388,7 +2449,7 @@ fun AdminEditUserPanel(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(20.dp))
-                    .background(Color(0xFF1B1D25))
+                    .background(DenTrainPalette.Panel)
                     .border(BorderStroke(1.dp, avatarBorderColor), RoundedCornerShape(20.dp))
                     .padding(20.dp),
                 contentAlignment = Alignment.Center
@@ -2398,7 +2459,7 @@ fun AdminEditUserPanel(
                         modifier = Modifier
                             .size(80.dp)
                             .clip(CircleShape)
-                            .background(Color(0xFF242732))
+                            .background(DenTrainPalette.RaisedPanel)
                             .border(BorderStroke(2.dp, avatarBorderColor), CircleShape),
                         contentAlignment = Alignment.Center
                     ) {
@@ -2406,7 +2467,7 @@ fun AdminEditUserPanel(
                     }
                     Spacer(Modifier.height(12.dp))
                     Text(nickname.ifBlank { "Без имени" }, fontWeight = FontWeight.Bold, color = Color.White, fontSize = 20.sp)
-                    if (username.isNotBlank()) Text("@$username", style = MaterialTheme.typography.bodyMedium, color = Color(0xFFA0A7B8))
+                    if (username.isNotBlank()) Text("@$username", style = MaterialTheme.typography.bodyMedium, color = DenTrainPalette.MutedText)
                     Spacer(Modifier.height(8.dp))
                     Box(
                         modifier = Modifier
@@ -2424,41 +2485,16 @@ fun AdminEditUserPanel(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(16.dp))
-                    .background(Color(0xFF1B1D25))
-                    .border(BorderStroke(1.dp, Color(0xFF282B36)), RoundedCornerShape(16.dp))
+                    .background(DenTrainPalette.Panel)
+                    .border(BorderStroke(1.dp, DenTrainPalette.SubtleBorder), RoundedCornerShape(16.dp))
                     .animateContentSize()
                     .padding(16.dp)
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text("Личные данные", fontWeight = FontWeight.Bold, fontSize = 17.sp, color = Color.White)
 
-                    OutlinedTextField(
-                        value = nickname,
-                        onValueChange = { nickname = it },
-                        label = { Text("Имя / Никнейм") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = Color.White,
-                            unfocusedTextColor = Color.White,
-                            focusedBorderColor = Color(0xFFA6FF00),
-                            unfocusedBorderColor = Color(0xFF333644)
-                        )
-                    )
-
-                    OutlinedTextField(
-                        value = username,
-                        onValueChange = { username = it.replace("@", "").trim() },
-                        label = { Text("Логин (@username)") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = Color.White,
-                            unfocusedTextColor = Color.White,
-                            focusedBorderColor = Color(0xFFA6FF00),
-                            unfocusedBorderColor = Color(0xFF333644)
-                        )
-                    )
+                    EditorTextField(nickname, { nickname = it }, "Имя / Никнейм")
+                    EditorTextField(username, { username = it.replace("@", "").trim() }, "Логин (@username)")
 
                     // Выбор роли
                     Text("Роль аккаунта:", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
@@ -2470,8 +2506,8 @@ fun AdminEditUserPanel(
                                 modifier = Modifier
                                     .weight(1f)
                                     .clip(RoundedCornerShape(12.dp))
-                                    .background(if (isSel) color.copy(alpha = 0.2f) else Color(0xFF242732))
-                                    .border(1.dp, if (isSel) color else Color(0xFF333644), RoundedCornerShape(12.dp))
+                                    .background(if (isSel) color.copy(alpha = 0.2f) else DenTrainPalette.RaisedPanel)
+                                    .border(1.dp, if (isSel) color else DenTrainPalette.Border, RoundedCornerShape(12.dp))
                                     .clickable { role = rKey }
                                     .padding(vertical = 10.dp),
                                 contentAlignment = Alignment.Center
@@ -2488,8 +2524,8 @@ fun AdminEditUserPanel(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(16.dp))
-                    .background(Color(0xFF1B1D25))
-                    .border(BorderStroke(1.dp, Color(0xFF282B36)), RoundedCornerShape(16.dp))
+                    .background(DenTrainPalette.Panel)
+                    .border(BorderStroke(1.dp, DenTrainPalette.SubtleBorder), RoundedCornerShape(16.dp))
                     .animateContentSize()
                     .padding(16.dp)
             ) {
@@ -2502,8 +2538,8 @@ fun AdminEditUserPanel(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(12.dp))
-                            .background(Color(0xFF242732))
-                            .border(1.dp, Color(0xFFA6FF00), RoundedCornerShape(12.dp))
+                            .background(DenTrainPalette.RaisedPanel)
+                            .border(1.dp, DenTrainPalette.Lime, RoundedCornerShape(12.dp))
                             .clickable { showClubDialog = true }
                             .padding(14.dp)
                     ) {
@@ -2517,7 +2553,7 @@ fun AdminEditUserPanel(
                                 Spacer(Modifier.width(12.dp))
                                 Text(selectedClub?.name ?: "Без клуба", fontWeight = FontWeight.Bold, color = Color.White, fontSize = 15.sp)
                             }
-                            Text("Изменить >", color = Color(0xFFA6FF00), fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                            Text("Изменить >", color = DenTrainPalette.Lime, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                         }
                     }
 
@@ -2527,8 +2563,8 @@ fun AdminEditUserPanel(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(12.dp))
-                            .background(Color(0xFF242732))
-                            .border(1.dp, Color(0xFFA6FF00), RoundedCornerShape(12.dp))
+                            .background(DenTrainPalette.RaisedPanel)
+                            .border(1.dp, DenTrainPalette.Lime, RoundedCornerShape(12.dp))
                             .clickable { showTrainerDialog = true }
                             .padding(14.dp)
                     ) {
@@ -2542,7 +2578,7 @@ fun AdminEditUserPanel(
                                 Spacer(Modifier.width(12.dp))
                                 Text(selectedTrainer?.nickname ?: "Без тренера", fontWeight = FontWeight.Bold, color = Color.White, fontSize = 15.sp)
                             }
-                            Text("Изменить >", color = Color(0xFFA6FF00), fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                            Text("Изменить >", color = DenTrainPalette.Lime, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -2553,8 +2589,8 @@ fun AdminEditUserPanel(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(16.dp))
-                    .background(Color(0xFF1B1D25))
-                    .border(BorderStroke(1.dp, Color(0xFFA6FF00)), RoundedCornerShape(16.dp))
+                    .background(DenTrainPalette.Panel)
+                    .border(BorderStroke(1.dp, DenTrainPalette.Lime), RoundedCornerShape(16.dp))
                     .clickable {
                         val diffs = buildDiffAnnotatedList()
                         if (diffs.isNotEmpty()) {
@@ -2566,7 +2602,7 @@ fun AdminEditUserPanel(
                     .padding(16.dp),
                 contentAlignment = Alignment.Center
             ) {
-                Text("Сохранить изменения", color = Color(0xFFA6FF00), fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                Text("Сохранить изменения", color = DenTrainPalette.Lime, fontWeight = FontWeight.Bold, fontSize = 17.sp)
             }
 
             Spacer(Modifier.height(32.dp))
@@ -2585,7 +2621,7 @@ fun AdminEditUserPanel(
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(12.dp))
                             .background(if (selectedClub == null) Color(0xFF2A2E1A) else Color(0xFF1C1E26))
-                            .border(1.dp, if (selectedClub == null) Color(0xFFA6FF00) else Color(0xFF333644), RoundedCornerShape(12.dp))
+                            .border(1.dp, if (selectedClub == null) DenTrainPalette.Lime else DenTrainPalette.Border, RoundedCornerShape(12.dp))
                             .clickable { selectedClub = null; showClubDialog = false }
                             .padding(14.dp),
                         verticalAlignment = Alignment.CenterVertically
@@ -2602,7 +2638,7 @@ fun AdminEditUserPanel(
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(12.dp))
                                 .background(if (isSel) Color(0xFF2A2E1A) else Color(0xFF1C1E26))
-                                .border(1.dp, if (isSel) Color(0xFFA6FF00) else Color(0xFF333644), RoundedCornerShape(12.dp))
+                                .border(1.dp, if (isSel) DenTrainPalette.Lime else DenTrainPalette.Border, RoundedCornerShape(12.dp))
                                 .clickable { selectedClub = club; showClubDialog = false }
                                 .padding(14.dp),
                             verticalAlignment = Alignment.CenterVertically
@@ -2619,7 +2655,7 @@ fun AdminEditUserPanel(
                 }
             },
             confirmButton = {
-                TextButton(onClick = { showClubDialog = false }) { Text("Закрыть", color = Color(0xFFA6FF00)) }
+                TextButton(onClick = { showClubDialog = false }) { Text("Закрыть", color = DenTrainPalette.Lime) }
             }
         )
     }
@@ -2636,7 +2672,7 @@ fun AdminEditUserPanel(
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(12.dp))
                             .background(if (selectedTrainer == null) Color(0xFF2A2E1A) else Color(0xFF1C1E26))
-                            .border(1.dp, if (selectedTrainer == null) Color(0xFFA6FF00) else Color(0xFF333644), RoundedCornerShape(12.dp))
+                            .border(1.dp, if (selectedTrainer == null) DenTrainPalette.Lime else DenTrainPalette.Border, RoundedCornerShape(12.dp))
                             .clickable { selectedTrainer = null; showTrainerDialog = false }
                             .padding(14.dp),
                         verticalAlignment = Alignment.CenterVertically
@@ -2653,7 +2689,7 @@ fun AdminEditUserPanel(
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(12.dp))
                                 .background(if (isSel) Color(0xFF2A2E1A) else Color(0xFF1C1E26))
-                                .border(1.dp, if (isSel) Color(0xFFA6FF00) else Color(0xFF333644), RoundedCornerShape(12.dp))
+                                .border(1.dp, if (isSel) DenTrainPalette.Lime else DenTrainPalette.Border, RoundedCornerShape(12.dp))
                                 .clickable { selectedTrainer = tr; showTrainerDialog = false }
                                 .padding(14.dp),
                             verticalAlignment = Alignment.CenterVertically
@@ -2670,136 +2706,45 @@ fun AdminEditUserPanel(
                 }
             },
             confirmButton = {
-                TextButton(onClick = { showTrainerDialog = false }) { Text("Закрыть", color = Color(0xFFA6FF00)) }
+                TextButton(onClick = { showTrainerDialog = false }) { Text("Закрыть", color = DenTrainPalette.Lime) }
             }
         )
     }
 
-    // Подтверждающий диалог со списком изменений (Строго 2 кнопки: Сохранить и Выйти без сохранения)
     if (showConfirmDialog) {
         val diffs = buildDiffAnnotatedList()
-        AlertDialog(
-            onDismissRequest = { showConfirmDialog = false },
-            title = { Text("Применить изменения?", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = Color.White) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    diffs.forEachIndexed { index, diffText ->
-                        Row(verticalAlignment = Alignment.Top) {
-                            Text("${index + 1}) ", fontWeight = FontWeight.Bold, color = Color(0xFFA6FF00), fontSize = 14.sp)
-                            Text(text = diffText, fontSize = 14.sp)
-                        }
-                    }
-                }
+        ConfirmDialog(
+            title = "Сохранить изменения профиля?",
+            confirmText = "Сохранить",
+            destructive = false,
+            onConfirm = {
+                showConfirmDialog = false
+                onSave(nickname, username, role, selectedClub, selectedTrainer)
             },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        showConfirmDialog = false
-                        onSave(nickname, username, role, selectedClub, selectedTrainer)
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFA6FF00), contentColor = Color.Black)
-                ) {
-                    Text("Сохранить", fontWeight = FontWeight.Bold)
-                }
+            dismissText = "Выйти без сохранения",
+            secondaryDestructive = true,
+            onSecondary = {
+                showConfirmDialog = false
+                onBack()
             },
-            dismissButton = {
-                OutlinedButton(
-                    onClick = {
-                        showConfirmDialog = false
-                        onBack()
-                    },
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.error)
-                ) {
-                    Text("Выйти без сохранения", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
-                }
+            onDismiss = { showConfirmDialog = false }
+        ) {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                diffs.forEach { diff -> Text(diff) }
             }
-        )
+        }
     }
 
     // Диалог подтверждения удаления пользователя
-    if (showDeleteConfirmDialog && onDelete != null) {
-        val securityCode = remember { (1000..9999).random().toString() }
-        var inputCode by remember { mutableStateOf("") }
-        val isCodeValid = inputCode.trim() == securityCode
-        val targetUsername = if (user.username.isNotBlank()) "@${user.username}" else user.nickname
-
-        AlertDialog(
-            onDismissRequest = { showDeleteConfirmDialog = false },
-            title = {
-                Text(
-                    text = "Удаление аккаунта $targetUsername",
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.error,
-                    fontSize = 18.sp
-                )
+    if (showDeleteConfirmDialog) {
+        val target = if (user.username.isNotBlank()) "@${user.username}" else user.nickname
+        DeleteProfileDialog(
+            target = target,
+            onDelete = {
+                showDeleteConfirmDialog = false
+                onDelete?.invoke()
             },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text(
-                        text = "Внимание! Это действие безвозвратно удалит аккаунт $targetUsername и все связанные данные.",
-                        color = Color.White,
-                        fontSize = 14.sp
-                    )
-                    Text(
-                        text = "Введите 4-значный код подтверждения:",
-                        color = Color.Gray,
-                        fontSize = 13.sp
-                    )
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(Color(0xFF242732))
-                            .border(1.dp, Color(0xFFFFC107), RoundedCornerShape(12.dp))
-                            .padding(12.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = securityCode.toCharArray().joinToString(" "),
-                            fontSize = 24.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            color = Color(0xFFFFC107),
-                            letterSpacing = 4.sp
-                        )
-                    }
-                    OutlinedTextField(
-                        value = inputCode,
-                        onValueChange = { if (it.length <= 4) inputCode = it },
-                        label = { Text("Введите код") },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = Color.White,
-                            unfocusedTextColor = Color.White,
-                            focusedBorderColor = Color(0xFFA6FF00),
-                            unfocusedBorderColor = Color(0xFF333644)
-                        )
-                    )
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        if (isCodeValid) {
-                            showDeleteConfirmDialog = false
-                            onDelete()
-                        }
-                    },
-                    enabled = isCodeValid,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.error,
-                        disabledContainerColor = Color(0xFF333644)
-                    )
-                ) {
-                    Text("Удалить аккаунт", fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showDeleteConfirmDialog = false }) {
-                    Text("Отмена", color = Color.Gray)
-                }
-            }
+            onDismiss = { showDeleteConfirmDialog = false }
         )
     }
 }
@@ -2812,7 +2757,7 @@ fun AssignedWorkoutCard(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val neoGreen = Color(0xFFBFFF00)
+    val neoGreen = DenTrainPalette.NeonGreen
 
     val date = remember(workout.dateEpochDay) {
         LocalDate.ofEpochDay(workout.dateEpochDay)
@@ -2840,8 +2785,8 @@ fun AssignedWorkoutCard(
             .fillMaxWidth()
             .height(110.dp)
             .clip(RoundedCornerShape(16.dp))
-            .background(Color(0xFF1B1D25))
-            .border(BorderStroke(1.dp, Color(0xFF282B36)), RoundedCornerShape(16.dp))
+            .background(DenTrainPalette.Panel)
+            .border(BorderStroke(1.dp, DenTrainPalette.SubtleBorder), RoundedCornerShape(16.dp))
             .clickable {
                 Haptic.click(context)
                 onClick()
@@ -2879,7 +2824,7 @@ fun AssignedWorkoutCard(
                     text = monthName,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Medium,
-                    color = Color(0xFFA0A7B8),
+                    color = DenTrainPalette.MutedText,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -2890,7 +2835,7 @@ fun AssignedWorkoutCard(
                     .padding(horizontal = 8.dp)
                     .fillMaxHeight()
                     .width(1.dp)
-                    .background(Color(0xFF282B36))
+                    .background(DenTrainPalette.SubtleBorder)
             )
 
             Column(
@@ -2916,7 +2861,7 @@ fun AssignedWorkoutCard(
                     text = "$exercisesCount ${Fmt.plural(exercisesCount, "упражнение", "упражнения", "упражнений")} · $totalSetsCount ${Fmt.plural(totalSetsCount, "подход", "подхода", "подходов")}",
                     fontSize = 13.sp,
                     fontWeight = FontWeight.Medium,
-                    color = Color(0xFFA0A7B8),
+                    color = DenTrainPalette.MutedText,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -2948,10 +2893,10 @@ fun HistoryAssignedWorkoutCard(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val cardBg = Color(0xFF1B1D25)
-    val borderColor = Color(0xFF282B36)
-    val labelColor = Color(0xFFA0A7B8)
-    val accentColor = Color(0xFFA6FF00) // салатовый акцент
+    val cardBg = DenTrainPalette.Panel
+    val borderColor = DenTrainPalette.SubtleBorder
+    val labelColor = DenTrainPalette.MutedText
+    val accentColor = DenTrainPalette.Lime // салатовый акцент
 
     val date = remember(workout.dateEpochDay) { LocalDate.ofEpochDay(workout.dateEpochDay) }
     val dayName = remember(date) { Fmt.dayName(date.dayOfWeek.value) }

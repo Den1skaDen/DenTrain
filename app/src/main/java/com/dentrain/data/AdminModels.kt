@@ -7,7 +7,8 @@ data class ClubModel(
     val address: String = "",
     val phone: String = "",
     val description: String = "",
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+    val ownerUid: String = ""
 )
 
 /** Модель тренера для Firestore */
@@ -44,9 +45,8 @@ data class TrainerRequestModel(
     val trainerName: String = "",
     val athleteUid: String = "",
     val athleteName: String = "",
-    val athleteEmail: String = "",
-    val status: String = "pending", // "pending", "accepted", "rejected"
-    val timestamp: Long = System.currentTimeMillis()
+    val timestamp: Long = System.currentTimeMillis(),
+    val eventId: String = ""
 )
 
 /** Модель упражнения для назначаемой тренировки */
@@ -58,6 +58,12 @@ data class AssignedExerciseModel(
 )
 
 /** Модель тренировки, назначаемой тренером ученику */
+enum class WorkoutDeliveryState(val label: String) {
+    QUEUED("В очереди"),
+    SENT("Отправлена · ожидает получения"),
+    RECEIVED("Получена учеником")
+}
+
 data class AssignedWorkoutModel(
     val id: String = "",
     val trainerUid: String = "",
@@ -68,5 +74,6 @@ data class AssignedWorkoutModel(
     val description: String = "",
     val exercises: List<AssignedExerciseModel> = emptyList(),
     val createdAt: Long = System.currentTimeMillis(),
-    val isCompleted: Boolean = false
+    val isCompleted: Boolean = false,
+    val deliveryState: WorkoutDeliveryState? = null
 )

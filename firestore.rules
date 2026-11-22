@@ -1,0 +1,566 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Assumed data model
+    // accounts/{uid}/diary/{id}: version (int=1), payload (bytes <= 950000), updatedAt (timestamp)
+    // Diary IDs are settings, workout_<UUID>, or record_<UUID>.
+    // profiles/{uid}: authenticated-visible profile without email or body metrics.
+    // accounts/{uid}: private email metadata; diary entries live below this document.
+    // users/{uid}: legacy mixed profile, readable only by its owner during migration.
+    // clubs/{id}: name, address, phone, description
+    // trainer_requests/{athleteUid~trainerUid}: one pending request and three rolling send timestamps, TTL expiresAt.
+    // notifications/{id}: legacy messages or immutable assignment, delivery and decision events.
+    // assigned_workouts/{id}: trainerUid, athleteUid, workout plan, status and optional receivedAt.
+    // admin_audit/{id}: actorUid, action, targetId, label and occurredAt for operational audit.
+    // admin_audit_heads/{kind}/targets/{uid}: links the current admin mutation to its append-only audit event.
+    // completed_workouts/{id}: athleteUid and completed workout data
+    // records/{id}: athleteUid and a personal record
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    function hasProfileRole(role) {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/profiles/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/profiles/$(request.auth.uid)).data.role == role;
+    }
+
+    function isAdmin() {
+      return hasProfileRole('admin');
+    }
+
+    function isTrainer() {
+      return isAdmin() || hasProfileRole('trainer');
+    }
+
+    function athleteConsentsToTrainer(athleteUid, trainerUid) {
+      return exists(/databases/$(database)/documents/profiles/$(athleteUid)) &&
+        get(/databases/$(database)/documents/profiles/$(athleteUid)).data.trainerUid == trainerUid;
+    }
+
+    function isConsentedTrainer(athleteUid) {
+      return isTrainer() && athleteConsentsToTrainer(athleteUid, request.auth.uid);
+    }
+
+    function profilePath(uid) {
+      return /databases/$(database)/documents/profiles/$(uid);
+    }
+
+    function trainerRequestPath(athleteUid, trainerUid) {
+      return /databases/$(database)/documents/trainer_requests/$(athleteUid + '~' + trainerUid);
+    }
+
+    function notificationPath(id) {
+      return /databases/$(database)/documents/notifications/$(id);
+    }
+
+    function validClubChange(before, after) {
+      let clubId = after.get('clubId', null);
+      let clubName = after.get('clubName', null);
+      return !after.diff(before).affectedKeys().hasAny(['clubId', 'clubName']) ||
+        (clubId == null && clubName == null) ||
+        (clubId is string &&
+         getAfter(/databases/$(database)/documents/clubs/$(clubId)).data.name == clubName);
+    }
+
+    function validOwnerTrainerChange(before, after) {
+      return !after.diff(before).affectedKeys().hasAny(['trainerUid', 'trainerName']) ||
+        (after.get('trainerUid', null) == null && after.get('trainerName', null) == null);
+    }
+
+    function validTrainerAcceptance(athleteUid, after) {
+      let pair = trainerRequestPath(athleteUid, request.auth.uid);
+      return after.trainerUid == request.auth.uid &&
+        get(pair).data.status == 'pending' &&
+        getAfter(pair).data.status == 'accepted' &&
+        after.trainerName == getAfter(pair).data.trainerName;
+    }
+
+    function optionalString(data, field, maxSize) {
+      return !(field in data) || data[field] == null ||
+        (data[field] is string && data[field].size() <= maxSize);
+    }
+
+    function optionalInt(data, field, minValue, maxValue) {
+      return !(field in data) || data[field] == null ||
+        (data[field] is int && data[field] >= minValue && data[field] <= maxValue);
+    }
+
+    function validProfile(data) {
+      return data.keys().hasOnly([
+          'nickname', 'username', 'avatarBase64', 'role', 'dobEpochDay',
+          'clubId', 'clubName', 'trainerUid', 'trainerName', 'gender'
+        ]) &&
+        data.keys().hasAll(['nickname', 'username', 'avatarBase64', 'role', 'dobEpochDay']) &&
+        data.nickname is string && data.nickname.size() >= 1 && data.nickname.size() <= 80 &&
+        data.username is string && data.username.size() <= 40 &&
+        data.avatarBase64 is string && data.avatarBase64.size() <= 400000 &&
+        data.role in ['athlete', 'trainer', 'admin'] &&
+        data.dobEpochDay is int && data.dobEpochDay >= -50000 && data.dobEpochDay <= 100000 &&
+        optionalString(data, 'clubId', 128) &&
+        optionalString(data, 'clubName', 120) &&
+        optionalString(data, 'trainerUid', 128) &&
+        optionalString(data, 'trainerName', 80) &&
+        optionalString(data, 'gender', 24);
+    }
+
+    function validPrivateAccount(data, uid) {
+      return data.keys().hasOnly(['email']) &&
+        data.keys().hasAll(['email']) &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 254 &&
+        isOwner(uid) && request.auth.token.email == data.email;
+    }
+
+    function validClub(data) {
+      return data.keys().hasOnly(['name', 'address', 'phone', 'description', 'ownerUid']) &&
+        data.keys().hasAll(['name', 'address', 'phone', 'description', 'ownerUid']) &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+        data.address is string && data.address.size() <= 300 &&
+        data.phone is string && data.phone.size() <= 40 &&
+        data.description is string && data.description.size() <= 2000 &&
+        data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128;
+    }
+
+    function validTrainerRequest(data, id) {
+      return data.keys().hasOnly([
+          'trainerUid', 'trainerName', 'athleteUid', 'athleteName', 'status',
+          'lastSent', 'secondSent', 'thirdSent', 'expiresAt', 'eventId'
+        ]) &&
+        data.trainerUid is string && data.trainerUid.matches('^[A-Za-z0-9_-]{1,128}$') &&
+        data.athleteUid is string && data.athleteUid.matches('^[A-Za-z0-9_-]{1,128}$') &&
+        id == data.athleteUid + '~' + data.trainerUid &&
+        data.athleteUid != data.trainerUid &&
+        data.trainerName is string && data.trainerName.size() <= 80 &&
+        data.athleteName is string && data.athleteName.size() <= 80 &&
+        data.status in ['pending', 'accepted', 'rejected', 'withdrawn'] &&
+        data.lastSent is timestamp && (data.secondSent == null || data.secondSent is timestamp) &&
+        (data.thirdSent == null || data.thirdSent is timestamp) && data.expiresAt is timestamp &&
+        data.eventId is string && data.eventId.matches('^[A-Za-z0-9]{20}$');
+    }
+
+    function validSend(data, id) {
+      let athlete = get(profilePath(data.athleteUid)).data;
+      let trainer = get(profilePath(data.trainerUid)).data;
+      return validTrainerRequest(data, id) && isOwner(data.athleteUid) &&
+        athlete.role == 'athlete' && athlete.get('trainerUid', null) == null &&
+        trainer.role in ['trainer', 'admin'] &&
+        data.athleteName == athlete.nickname && data.trainerName == trainer.nickname &&
+        data.status == 'pending' && data.lastSent == request.time &&
+        data.expiresAt >= request.time + duration.value(7, 'd') - duration.value(5, 'm') &&
+        data.expiresAt <= request.time + duration.value(7, 'd') + duration.value(5, 'm') &&
+        !exists(notificationPath('decision_' + data.eventId));
+    }
+
+    function validResend(data, before) {
+      return before.lastSent + duration.value(1, 'h') <= request.time &&
+        (before.thirdSent == null || before.thirdSent + duration.value(1, 'd') <= request.time) &&
+        data.secondSent == before.lastSent && data.thirdSent == before.secondSent &&
+        data.eventId != before.eventId;
+    }
+
+    function validDecision(before, after, id) {
+      let athlete = profilePath(before.athleteUid);
+      let event = 'decision_' + after.eventId;
+      return closesTrainerRequest(before, after, id) && isOwner(before.trainerUid) && isTrainer() &&
+        after.status in ['accepted', 'rejected'] &&
+        (after.status == 'rejected' ||
+         (get(athlete).data.role == 'athlete' && get(athlete).data.get('trainerUid', null) == null &&
+          getAfter(athlete).data.trainerUid == before.trainerUid)) &&
+        !exists(notificationPath(event)) && getAfter(notificationPath(event)).data.event == after.status;
+    }
+
+    function closesTrainerRequest(before, after, id) {
+      return validTrainerRequest(after, id) && before.status == 'pending' && before.expiresAt > request.time &&
+        after.diff(before).affectedKeys().hasOnly(['status', 'expiresAt']) &&
+        after.expiresAt.toMillis() == before.lastSent.toMillis() + 86460000;
+    }
+
+    function validActivity(data) {
+      return data.keys().hasOnly([
+          'recipientUid', 'senderUid', 'event', 'subjectId', 'subject', 'timestamp', 'occurredAt', 'expiresAt', 'isRead'
+        ]) &&
+        data.recipientUid is string && data.recipientUid.size() > 0 && data.recipientUid.size() <= 128 &&
+        data.senderUid is string && data.senderUid.size() > 0 && data.senderUid.size() <= 128 &&
+        data.event in ['accepted', 'rejected', 'assigned', 'received', 'request_sent', 'request_received'] &&
+        data.subjectId is string && data.subjectId.matches('^[A-Za-z0-9_~-]{1,257}$') &&
+        data.subject is string && data.subject.size() <= 160 &&
+        data.timestamp is int && data.timestamp > 0 && data.occurredAt is timestamp &&
+        data.expiresAt is timestamp && data.expiresAt.toMillis() == data.timestamp + 7776000000 &&
+        data.isRead is bool;
+    }
+
+    // Request notifications are bound to a send in the same transaction.
+    function validRequestSentActivity(data, id) {
+      let path = /databases/$(database)/documents/trainer_requests/$(data.subjectId);
+      let after = getAfter(path).data;
+      return after.athleteUid == data.senderUid && after.status == 'pending' &&
+        after.lastSent == request.time &&
+        (!exists(path) || get(path).data.eventId != after.eventId) &&
+        ((data.event == 'request_sent' && id == after.eventId &&
+          data.recipientUid == after.athleteUid && data.subject == after.trainerName) ||
+         (data.event == 'request_received' && id == 'request_' + after.eventId &&
+          data.recipientUid == after.trainerUid && data.subject == after.athleteName));
+    }
+
+    function validDecisionActivity(data, id) {
+      let path = trainerRequestPath(data.recipientUid, data.senderUid);
+      let after = getAfter(path).data;
+      return data.event in ['accepted', 'rejected'] &&
+        data.subjectId == data.recipientUid + '~' + data.senderUid &&
+        id == 'decision_' + after.eventId && get(path).data.status == 'pending' &&
+        data.event == after.status && data.subject == after.trainerName;
+    }
+
+    function validWorkoutActivity(data, id) {
+      let path = /databases/$(database)/documents/assigned_workouts/$(data.subjectId);
+      let after = getAfter(path).data;
+      return data.subject == after.title &&
+        ((data.event == 'assigned' && id == 'assigned_' + data.subjectId && !exists(path) &&
+          data.recipientUid == after.athleteUid && data.senderUid == after.trainerUid) ||
+         (data.event == 'received' && id == 'received_' + data.subjectId &&
+          get(path).data.get('receivedAt', null) == null && after.receivedAt == request.time &&
+          data.recipientUid == after.trainerUid && data.senderUid == after.athleteUid));
+    }
+
+    function validAudit(data) {
+      return data.keys().hasOnly(['actorUid', 'action', 'targetId', 'label', 'occurredAt']) &&
+        isOwner(data.actorUid) &&
+        data.action in ['role_changed', 'trainer_changed', 'access_changed', 'profile_deleted', 'club_deleted', 'workout_assigned'] &&
+        data.targetId is string && data.targetId.size() > 0 && data.targetId.size() <= 128 &&
+        data.label is string && data.label.size() <= 160 && data.occurredAt == request.time;
+    }
+
+    function auditMatchesChange(data, id) {
+      let profile = profilePath(data.targetId);
+      let club = /databases/$(database)/documents/clubs/$(data.targetId);
+      return (data.action in ['role_changed', 'trainer_changed', 'access_changed'] &&
+          data.action == profileAuditAction(get(profile).data, getAfter(profile).data) &&
+          auditHeadPointsTo('profile', data.targetId, data.action, id)) ||
+        (data.action == 'profile_deleted' && exists(profile) && !existsAfter(profile) &&
+          auditHeadPointsTo('profile', data.targetId, data.action, id)) ||
+        (data.action == 'club_deleted' && exists(club) && !existsAfter(club) &&
+          auditHeadPointsTo('club', data.targetId, data.action, id)) ||
+        (data.action == 'workout_assigned' && id.matches('^workout_[A-Za-z0-9]{20}$') &&
+         auditMatchesWorkout(data, id.split('_')[1]));
+    }
+
+    function auditMatchesWorkout(data, id) {
+      let workout = /databases/$(database)/documents/assigned_workouts/$(id);
+      let after = getAfter(workout).data;
+      return !exists(workout) && after.trainerUid == data.actorUid && after.athleteUid == data.targetId &&
+        after.title == data.label;
+    }
+
+    function profileAuditAction(before, after) {
+      let roleChanged = before.role != after.role;
+      let trainerChanged = before.get('trainerUid', null) != after.get('trainerUid', null);
+      return roleChanged
+        ? (trainerChanged ? 'access_changed' : 'role_changed')
+        : (trainerChanged ? 'trainer_changed' : '');
+    }
+
+    function auditHeadPath(kind, id) {
+      return /databases/$(database)/documents/admin_audit_heads/$(kind)/targets/$(id);
+    }
+
+    function auditPath(id) {
+      return /databases/$(database)/documents/admin_audit/$(id);
+    }
+
+    function auditHeadPointsTo(kind, target, action, id) {
+      let head = getAfter(auditHeadPath(kind, target)).data;
+      return head.auditId == id && head.action == action && head.occurredAt == request.time;
+    }
+
+    function hasAudit(kind, target, action) {
+      let head = getAfter(auditHeadPath(kind, target)).data;
+      return head.action == action && head.occurredAt == request.time;
+    }
+
+    function validAuditHead(data, kind, target) {
+      let id = data.auditId;
+      let entry = getAfter(auditPath(id)).data;
+      return data.keys().hasOnly(['auditId', 'action', 'occurredAt']) &&
+        id is string && id.matches('^[A-Za-z0-9]{20}$') &&
+        data.occurredAt == request.time && !exists(auditPath(id)) &&
+        entry.targetId == target && entry.actorUid == request.auth.uid && entry.occurredAt == request.time &&
+        entry.action == data.action &&
+        ((kind == 'profile' && data.action in ['role_changed', 'trainer_changed', 'access_changed', 'profile_deleted']) ||
+          (kind == 'club' && data.action == 'club_deleted'));
+    }
+
+    function validAdminProfileUpdate(uid, before, after) {
+      let action = profileAuditAction(before, after);
+      let trainerUid = after.get('trainerUid', null);
+      return validProfile(after) && validClubChange(before, after) &&
+        (!isOwner(uid) || after.role == before.role) &&
+        (after.get('trainerUid', null) == before.get('trainerUid', null) ||
+          (trainerUid == null ? after.get('trainerName', null) == null :
+            (after.role == 'athlete' && uid != trainerUid &&
+             get(profilePath(trainerUid)).data.role in ['trainer', 'admin'] &&
+             get(profilePath(trainerUid)).data.nickname == after.trainerName))) &&
+        (action == '' || hasAudit('profile', uid, action));
+    }
+
+    function validNotification(data) {
+      return data.keys().hasOnly([
+          'recipientUid', 'senderUid', 'requestId', 'title', 'message',
+          'timestamp', 'isRead', 'type'
+        ]) &&
+        data.keys().hasAll([
+          'recipientUid', 'title', 'message', 'timestamp', 'isRead', 'type'
+        ]) &&
+        data.recipientUid is string && data.recipientUid.size() >= 1 && data.recipientUid.size() <= 128 &&
+        optionalString(data, 'senderUid', 128) &&
+        optionalString(data, 'requestId', 128) &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 120 &&
+        data.message is string && data.message.size() <= 1000 &&
+        data.timestamp is int && data.timestamp > 0 &&
+        data.isRead is bool &&
+        data.type in ['info', 'success', 'warning', 'error'];
+    }
+
+    function validAssignedWorkout(data) {
+      return data.keys().hasOnly([
+          'trainerUid', 'trainerName', 'athleteUid', 'title', 'dateEpochDay',
+          'description', 'exercises', 'createdAt', 'status', 'receivedAt', 'deliveryVersion'
+        ]) &&
+        data.keys().hasAll([
+          'trainerUid', 'trainerName', 'athleteUid', 'title', 'dateEpochDay',
+          'description', 'exercises', 'createdAt'
+        ]) &&
+        data.trainerUid is string && data.trainerUid.size() >= 1 && data.trainerUid.size() <= 128 &&
+        data.trainerName is string && data.trainerName.size() <= 80 &&
+        data.athleteUid is string && data.athleteUid.size() >= 1 && data.athleteUid.size() <= 128 &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 160 &&
+        data.dateEpochDay is int && data.dateEpochDay >= -50000 && data.dateEpochDay <= 100000 &&
+        data.description is string && data.description.size() <= 4000 &&
+        data.exercises is list && data.exercises.size() <= 100 &&
+        data.createdAt is int && data.createdAt > 0 &&
+        (!( 'status' in data) || data.status in ['pending', 'completed', 'cancelled']) &&
+        (!('receivedAt' in data) || data.receivedAt is timestamp) &&
+        (!('deliveryVersion' in data) || (data.deliveryVersion is int && data.deliveryVersion == 1));
+    }
+
+    function validCompletedWorkout(data) {
+      return data.keys().hasOnly([
+          'athleteUid', 'title', 'dateEpochDay', 'dayOfWeek', 'startedAt',
+          'completedAt', 'description', 'exercises', 'createdAt'
+        ]) &&
+        data.keys().hasAll([
+          'athleteUid', 'title', 'dateEpochDay', 'dayOfWeek',
+          'description', 'exercises', 'createdAt'
+        ]) &&
+        data.athleteUid is string && data.athleteUid.size() >= 1 && data.athleteUid.size() <= 128 &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 160 &&
+        data.dateEpochDay is int && data.dateEpochDay >= -50000 && data.dateEpochDay <= 100000 &&
+        data.dayOfWeek is int && data.dayOfWeek >= 1 && data.dayOfWeek <= 7 &&
+        optionalInt(data, 'startedAt', 0, 9999999999999) &&
+        optionalInt(data, 'completedAt', 0, 9999999999999) &&
+        data.description is string && data.description.size() <= 4000 &&
+        data.exercises is list && data.exercises.size() <= 100 &&
+        data.createdAt is int && data.createdAt > 0;
+    }
+
+    function validRecord(data) {
+      return data.keys().hasOnly([
+          'athleteUid', 'exerciseName', 'weight', 'reps', 'dateEpochDay',
+          'comment', 'isFavorite', 'updatedAt'
+        ]) &&
+        data.keys().hasAll([
+          'athleteUid', 'exerciseName', 'weight', 'reps', 'dateEpochDay',
+          'comment', 'isFavorite', 'updatedAt'
+        ]) &&
+        data.athleteUid is string && data.athleteUid.size() >= 1 && data.athleteUid.size() <= 128 &&
+        data.exerciseName is string && data.exerciseName.size() >= 1 && data.exerciseName.size() <= 160 &&
+        data.weight is number && data.weight >= 0 && data.weight <= 2000 &&
+        data.reps is int && data.reps >= 0 && data.reps <= 10000 &&
+        data.dateEpochDay is int && data.dateEpochDay >= -50000 && data.dateEpochDay <= 100000 &&
+        data.comment is string && data.comment.size() <= 1000 &&
+        data.isFavorite is bool &&
+        data.updatedAt is int && data.updatedAt > 0;
+    }
+
+    function validDiaryId(id) {
+      return id == 'settings' ||
+        id.matches('^workout_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$') ||
+        id.matches('^record_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$');
+    }
+
+    function validDiaryEntry(data) {
+      return data.keys().hasOnly(['version', 'payload', 'updatedAt']) &&
+        data.keys().hasAll(['version', 'payload', 'updatedAt']) &&
+        data.version is int && data.version == 1 &&
+        data.payload is bytes && data.payload.size() <= 950000 &&
+        data.updatedAt is timestamp;
+    }
+
+    match /accounts/{uid}/diary/{entryId} {
+      allow get, list: if isOwner(uid);
+      allow create, update: if isOwner(uid) && validDiaryId(entryId) &&
+        validDiaryEntry(request.resource.data);
+      allow delete: if isOwner(uid) && validDiaryId(entryId);
+    }
+
+    match /accounts/{uid} {
+      allow get: if isOwner(uid) || isAdmin();
+      allow create, update: if validPrivateAccount(request.resource.data, uid);
+      allow delete: if isOwner(uid) || isAdmin();
+    }
+
+    match /profiles/{uid} {
+      allow read: if isSignedIn();
+      allow create: if isOwner(uid) && request.resource.data.role == 'athlete' &&
+        validOwnerTrainerChange({}, request.resource.data) && validClubChange({}, request.resource.data) &&
+        validProfile(request.resource.data);
+      allow update: if isAdmin() &&
+        validAdminProfileUpdate(uid, resource.data, request.resource.data);
+      allow update: if isOwner(uid) && request.resource.data.role == resource.data.role &&
+        validOwnerTrainerChange(resource.data, request.resource.data) &&
+        validClubChange(resource.data, request.resource.data) &&
+        validProfile(request.resource.data);
+      allow update: if isTrainer() &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['trainerUid', 'trainerName']) &&
+        validProfile(request.resource.data) &&
+        ((resource.data.get('trainerUid', null) == request.auth.uid &&
+          request.resource.data.trainerUid == null && request.resource.data.trainerName == null) ||
+         validTrainerAcceptance(uid, request.resource.data));
+      allow delete: if isOwner(uid) || (isAdmin() && hasAudit('profile', uid, 'profile_deleted'));
+    }
+
+    match /users/{uid} {
+      allow get: if isOwner(uid);
+    }
+
+    match /clubs/{clubId} {
+      allow read: if isSignedIn();
+      allow create: if validClub(request.resource.data) &&
+        (isAdmin() ||
+         (isTrainer() && request.resource.data.ownerUid == request.auth.uid));
+      allow update: if validClub(request.resource.data) &&
+        (isAdmin() ||
+         (isTrainer() && resource.data.ownerUid == request.auth.uid &&
+          request.resource.data.ownerUid == resource.data.ownerUid));
+      allow delete: if isAdmin() && hasAudit('club', clubId, 'club_deleted');
+    }
+
+    match /trainer_requests/{requestId} {
+      allow get: if isSignedIn() && resource == null &&
+        requestId.matches('^' + request.auth.uid + '~[A-Za-z0-9_-]{1,128}$');
+      allow read: if isAdmin() ||
+        (isSignedIn() &&
+         (resource.data.athleteUid == request.auth.uid ||
+          (isTrainer() && resource.data.trainerUid == request.auth.uid)));
+      allow create: if validSend(request.resource.data, requestId) &&
+        request.resource.data.secondSent == null && request.resource.data.thirdSent == null;
+      allow update: if (validSend(request.resource.data, requestId) &&
+          validResend(request.resource.data, resource.data)) ||
+        validDecision(resource.data, request.resource.data, requestId) ||
+        (isOwner(resource.data.athleteUid) && request.resource.data.status == 'withdrawn' &&
+          closesTrainerRequest(resource.data, request.resource.data, requestId));
+    }
+
+    match /notifications/{notificationId} {
+      allow read: if isAdmin() ||
+        (isSignedIn() && resource.data.recipientUid == request.auth.uid);
+      allow create: if validActivity(request.resource.data) && isOwner(request.resource.data.senderUid) &&
+        request.resource.data.occurredAt == request.time && request.resource.data.isRead == false &&
+        request.resource.data.timestamp <= request.time.toMillis() + 300000 &&
+        (validRequestSentActivity(request.resource.data, notificationId) ||
+         validDecisionActivity(request.resource.data, notificationId) ||
+         validWorkoutActivity(request.resource.data, notificationId));
+      allow update: if isSignedIn() && resource.data.recipientUid == request.auth.uid &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isRead']) &&
+        request.resource.data.isRead == true &&
+        (validActivity(request.resource.data) || validNotification(request.resource.data));
+      allow delete: if isAdmin() ||
+        (isSignedIn() && resource.data.recipientUid == request.auth.uid);
+    }
+
+    match /admin_audit/{auditId} {
+      allow read: if isAdmin();
+      allow create: if isAdmin() && validAudit(request.resource.data) &&
+        auditMatchesChange(request.resource.data, auditId);
+    }
+
+    match /admin_audit_heads/{kind}/targets/{targetId} {
+      allow create, update: if isAdmin() && validAuditHead(request.resource.data, kind, targetId);
+    }
+
+    match /assigned_workouts/{workoutId} {
+      allow read: if isAdmin() ||
+        (isSignedIn() &&
+         (resource.data.athleteUid == request.auth.uid ||
+          (resource.data.trainerUid == request.auth.uid && isConsentedTrainer(resource.data.athleteUid))));
+      allow create: if isOwner(request.resource.data.trainerUid) &&
+        ((isAdmin() &&
+          getAfter(/databases/$(database)/documents/admin_audit/$('workout_' + workoutId)).data.action == 'workout_assigned') ||
+         (hasProfileRole('trainer') && isConsentedTrainer(request.resource.data.athleteUid))) &&
+        get(profilePath(request.resource.data.athleteUid)).data.role == 'athlete' &&
+        !('receivedAt' in request.resource.data) &&
+        request.resource.data.deliveryVersion == 1 && request.resource.data.status == 'pending' &&
+        !exists(notificationPath('assigned_' + workoutId)) &&
+        getAfter(notificationPath('assigned_' + workoutId)).data.event == 'assigned' &&
+        validAssignedWorkout(request.resource.data);
+      allow update: if isAdmin() && validAssignedWorkout(request.resource.data) &&
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny(['trainerUid', 'athleteUid', 'receivedAt', 'deliveryVersion']);
+      allow update: if isOwner(resource.data.athleteUid) &&
+        resource.data.get('receivedAt', null) == null &&
+        resource.data.get('deliveryVersion', 0) == 1 &&
+        resource.data.get('status', 'pending') != 'cancelled' &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['receivedAt']) &&
+        request.resource.data.receivedAt == request.time &&
+        getAfter(notificationPath('received_' + workoutId)).data.event == 'received' &&
+        validAssignedWorkout(request.resource.data);
+      allow update: if isSignedIn() && resource.data.athleteUid == request.auth.uid &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']) &&
+        resource.data.get('status', 'pending') == 'pending' && request.resource.data.status == 'completed' &&
+        validAssignedWorkout(request.resource.data);
+      allow delete: if isAdmin() ||
+        (isTrainer() && resource.data.trainerUid == request.auth.uid &&
+         athleteConsentsToTrainer(resource.data.athleteUid, request.auth.uid));
+    }
+
+    match /completed_workouts/{workoutId} {
+      allow read: if isAdmin() ||
+        (isSignedIn() &&
+         (resource.data.athleteUid == request.auth.uid ||
+          isConsentedTrainer(resource.data.athleteUid)));
+      allow create: if isSignedIn() &&
+        request.resource.data.athleteUid == request.auth.uid &&
+        validCompletedWorkout(request.resource.data);
+      allow update: if isSignedIn() &&
+        resource.data.athleteUid == request.auth.uid &&
+        request.resource.data.athleteUid == resource.data.athleteUid &&
+        validCompletedWorkout(request.resource.data);
+      allow delete: if isAdmin() ||
+        (isSignedIn() && resource.data.athleteUid == request.auth.uid);
+    }
+
+    match /records/{recordId} {
+      allow read: if isAdmin() ||
+        (isSignedIn() &&
+         (resource.data.athleteUid == request.auth.uid ||
+          isConsentedTrainer(resource.data.athleteUid)));
+      allow create: if isSignedIn() &&
+        request.resource.data.athleteUid == request.auth.uid &&
+        validRecord(request.resource.data);
+      allow update: if isSignedIn() &&
+        resource.data.athleteUid == request.auth.uid &&
+        request.resource.data.athleteUid == resource.data.athleteUid &&
+        validRecord(request.resource.data);
+      allow delete: if isAdmin() ||
+        (isSignedIn() && resource.data.athleteUid == request.auth.uid);
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

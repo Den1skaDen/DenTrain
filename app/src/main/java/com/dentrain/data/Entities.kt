@@ -15,7 +15,10 @@ object WorkoutStatus {
 }
 
 /** Тренировка. Каждое занятие — отдельная запись со своей датой и своими результатами. */
-@Entity(tableName = "workouts")
+@Entity(
+    tableName = "workouts",
+    indices = [Index(value = ["status", "dateEpochDay"]), Index("cloudId"), Index("assignmentId")]
+)
 data class WorkoutEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val title: String,
@@ -25,7 +28,9 @@ data class WorkoutEntity(
     val status: Int = WorkoutStatus.PLANNED,
     val currentExerciseIndex: Int = 0, // на каком упражнении остановились (для продолжения)
     val startedAt: Long? = null,
-    val completedAt: Long? = null
+    val completedAt: Long? = null,
+    val cloudId: String? = null,
+    val assignmentId: String? = null
 )
 
 /** Упражнение внутри тренировки. Здесь хранится ПЛАН (подходы, повторения, вес). */
@@ -58,7 +63,7 @@ data class ExerciseEntity(
         childColumns = ["exerciseId"],
         onDelete = ForeignKey.CASCADE
     )],
-    indices = [Index("exerciseId")]
+    indices = [Index(value = ["exerciseId", "setNumber"])]
 )
 data class SetResultEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -88,7 +93,7 @@ data class PinnedWorkoutEntity(
 )
 
 /** Личный рекорд. Значения хранятся ровно такими, как ввёл пользователь. */
-@Entity(tableName = "records")
+@Entity(tableName = "records", indices = [Index("dateEpochDay"), Index("weight")])
 data class RecordEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val exerciseName: String,
@@ -124,6 +129,8 @@ data class SettingsEntity(
 
 
 // ---------- Связи для чтения ----------
+
+data class CalendarWorkout(val id: Long, val dateEpochDay: Long, val status: Int)
 
 data class ExerciseWithSets(
     @Embedded val exercise: ExerciseEntity,

@@ -1,7 +1,10 @@
 package com.dentrain.ui.records
 
+import com.dentrain.util.userMessage
+import com.dentrain.ui.components.launchUserAction
+import com.dentrain.ui.components.OperationErrorDialog
+import com.dentrain.ui.theme.DenTrainPalette
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -60,13 +63,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.painterResource
@@ -113,8 +115,10 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import com.dentrain.R
+import com.dentrain.data.BETTER_RECORD_EXISTS
 import com.dentrain.data.RecordEntity
 import com.dentrain.data.WorkoutRepository
+import com.dentrain.data.WorkoutScreenCache
 import com.dentrain.ui.components.ConfirmDialog
 import com.dentrain.ui.components.DateField
 import com.dentrain.ui.components.EmptyState
@@ -122,34 +126,39 @@ import com.dentrain.ui.components.ErrorText
 import com.dentrain.ui.components.GradientButton
 import com.dentrain.ui.components.RecordCelebrationDialog
 import com.dentrain.ui.components.ScreenHeader
-import com.dentrain.ui.components.ZCard
-import com.dentrain.ui.components.appViewModel
-import com.dentrain.ui.theme.LocalGradient
+import com.dentrain.ui.components.MetricNumber
+import com.dentrain.ui.components.rememberMetricNumberWidth
 import com.dentrain.ui.theme.DenTrainTheme
 import com.dentrain.util.Fmt
 import com.dentrain.util.Haptic
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.time.LocalDate
 
 enum class RecordSort { DATE, NAME }
 
-class RecordsViewModel(private val repo: WorkoutRepository) : ViewModel() {
-    private val all = repo.allRecords.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+class RecordsViewModel(private val repo: WorkoutRepository, cache: WorkoutScreenCache) : ViewModel() {
+    private val all = cache.records
     val filterName = MutableStateFlow<String?>(null)
     val showFavoritesOnly = MutableStateFlow(false)
     val repRangeFilter = MutableStateFlow("Все") // "Все", "1-3", "3-5", "5-8", "8-12", "12-15", "15+"
     val sort = MutableStateFlow(RecordSort.DATE)
 
     val names: StateFlow<List<String>> = all.map { list -> list.map { it.exerciseName }.distinct().sortedBy { it.lowercase() } }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        .flowOn(Dispatchers.Default).stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     val visible: StateFlow<List<RecordEntity>> = combine(all, filterName, repRangeFilter, sort, showFavoritesOnly) { list, fName, repRange, s, favsOnly ->
         var filtered = list
@@ -162,46 +171,70 @@ class RecordsViewModel(private val repo: WorkoutRepository) : ViewModel() {
             filtered = filtered.filter { it.exerciseName.equals(fName, ignoreCase = true) }
         }
 
-        when (repRange) {
-            "1-3" -> filtered = filtered.filter { it.reps in 1..3 }
-            "3-5" -> filtered = filtered.filter { it.reps in 3..5 }
-            "5-8" -> filtered = filtered.filter { it.reps in 5..8 }
-            "8-12" -> filtered = filtered.filter { it.reps in 8..12 }
-            "12-15" -> filtered = filtered.filter { it.reps in 12..15 }
-            "15+" -> filtered = filtered.filter { it.reps >= 15 }
-        }
+        val reps = repetitionRange(repRange)
+        if (reps != null) filtered = filtered.filter { it.reps in reps }
 
         when (s) {
-            RecordSort.DATE -> filtered.sortedByDescending { it.dateEpochDay }
+            RecordSort.DATE -> filtered
             RecordSort.NAME -> filtered.sortedWith(compareBy<RecordEntity> { it.exerciseName.lowercase() }.thenByDescending { it.dateEpochDay })
         }
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    }.flowOn(Dispatchers.Default).stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
-    fun save(id: Long, name: String, weightText: String, repsText: String, epochDay: Long, comment: String): String? {
+    @OptIn(ExperimentalCoroutinesApi::class)
+    internal val progress = combine(filterName, repRangeFilter, showFavoritesOnly, ::ProgressFilter)
+        .flatMapLatest { filter ->
+            val name = filter.exerciseName?.trim()
+            if (name.isNullOrEmpty()) {
+                flowOf(ProgressSeries(filter, emptyList()))
+            } else {
+                val sets = if (filter.favoritesOnly) flowOf(emptyList())
+                    else repo.observeWorkingSetsForProgress(name)
+                combine(all, sets) { records, workingSets ->
+                    ProgressSeries(filter, dailyProgress(name, records, workingSets, filter))
+                }.onStart { emit(ProgressSeries(filter, emptyList())) }
+            }
+        }
+        .flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    var operationError by mutableStateOf<String?>(null)
+
+    private fun perform(fallback: String, action: suspend () -> Unit) {
+        launchUserAction(fallback, { operationError = it }, action)
+    }
+
+    suspend fun save(id: Long, name: String, weightText: String, repsText: String, epochDay: Long, comment: String): String? {
         if (name.isBlank()) return "Введите название упражнения"
         val weight = Fmt.parseWeight(weightText)
-        if (weight == null || weight < 0) return "Вес — число не меньше 0"
+        if (weight == null || !weight.isFinite() || weight < 0) return "Вес — число не меньше 0"
         val reps = repsText.trim().toIntOrNull()
         if (reps == null || reps < 1) return "Повторений должно быть не меньше 1"
 
-        viewModelScope.launch {
-            repo.saveOrUpdateRecord(RecordEntity(id, name.trim(), weight, reps, epochDay, comment.trim()))
+        val record = RecordEntity(id, name.trim(), weight, reps, epochDay, comment.trim())
+        return try {
+            if (id != 0L) repo.editRecord(record)
+            else if (repo.saveOrUpdateRecord(record) == null) BETTER_RECORD_EXISTS
+            else null
+        } catch (failure: Exception) {
+            failure.userMessage("Не удалось сохранить рекорд.")
         }
-        return null
     }
 
-    fun delete(id: Long) { viewModelScope.launch { repo.deleteRecord(id) } }
+    fun delete(id: Long) { perform("Не удалось удалить рекорд.") { repo.deleteRecord(id) } }
 
-    fun toggleFavorite(record: RecordEntity) { viewModelScope.launch { repo.toggleRecordFavorite(record) } }
+    fun toggleFavorite(record: RecordEntity) { perform("Не удалось обновить избранное.") { repo.toggleRecordFavorite(record) } }
 }
 
 @Composable
-fun RecordsScreen(onSettings: () -> Unit) {
-    val vm = appViewModel { RecordsViewModel(it.repository) }
+fun RecordsScreen(vm: RecordsViewModel, onSettings: () -> Unit) {
+    OperationErrorDialog(vm.operationError) { vm.operationError = null }
     val records by vm.visible.collectAsStateWithLifecycle()
     val names by vm.names.collectAsStateWithLifecycle()
     val filterName by vm.filterName.collectAsStateWithLifecycle()
     val repRangeFilter by vm.repRangeFilter.collectAsStateWithLifecycle()
+    val favoritesOnly by vm.showFavoritesOnly.collectAsStateWithLifecycle()
+    val progress by vm.progress.collectAsStateWithLifecycle()
+    val chart = progress?.takeIf { it.filter == ProgressFilter(filterName, repRangeFilter, favoritesOnly) }
     val context = LocalContext.current
 
     var editing by remember { mutableStateOf<RecordEntity?>(null) }
@@ -211,9 +244,8 @@ fun RecordsScreen(onSettings: () -> Unit) {
 
     var showFilterDialog by remember { mutableStateOf(false) }
 
-    LaunchedEffect(names, filterName) {
-        // Убрали сброс filterName при вводе нового текста, иначе клавиатура закрывается
-    }
+    val weightWidth = rememberMetricNumberWidth(3, 26.sp, FontWeight.ExtraBold, 26.sp)
+    val repsWidth = rememberMetricNumberWidth(2, 26.sp, FontWeight.ExtraBold, 26.sp)
 
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize()) {
@@ -229,7 +261,7 @@ fun RecordsScreen(onSettings: () -> Unit) {
             RecordSearchHeader(
                 names = names,
                 currentQuery = filterName,
-                isFavoritesOnly = vm.showFavoritesOnly.collectAsStateWithLifecycle().value,
+                isFavoritesOnly = favoritesOnly,
                 isFilterActive = repRangeFilter != "Все",
                 onQueryChange = { vm.filterName.value = it },
                 onAddClick = { creating = true },
@@ -242,14 +274,20 @@ fun RecordsScreen(onSettings: () -> Unit) {
                 contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 24.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                if (filterName != null && records.size >= 2) item { ProgressChart(records) }
+                if (chart != null && chart.points.isNotEmpty()) {
+                    item(key = "record_progress", contentType = "chart") { ProgressChart(chart) }
+                }
 
                 if (records.isEmpty()) {
-                    item { EmptyState(Icons.Filled.EmojiEvents, "Рекордов не найдено", "Попробуйте изменить фильтры") }
+                    item(key = "empty", contentType = "empty") {
+                        EmptyState(Icons.Filled.EmojiEvents, "Рекордов не найдено", "Попробуйте изменить фильтры")
+                    }
                 } else {
-                    items(records, key = { it.id }) { r ->
+                    items(records, key = { it.id }, contentType = { "record" }) { r ->
                         RecordCard(
                             record = r,
+                            weightWidth = weightWidth,
+                            repsWidth = repsWidth,
                             onEdit = { editing = r },
                             onDelete = { deleting = r },
                             onFavoriteToggle = { vm.toggleFavorite(r) }
@@ -288,7 +326,7 @@ fun RecordsScreen(onSettings: () -> Unit) {
                     Text("Закрыть")
                 }
             },
-            containerColor = Color(0xFF1B1D25),
+            containerColor = DenTrainPalette.Panel,
             titleContentColor = Color.White
         )
     }
@@ -353,6 +391,8 @@ private fun RecordDialog(
     var date by remember { mutableLongStateOf(record?.dateEpochDay ?: LocalDate.now().toEpochDay()) }
     var comment by remember { mutableStateOf(record?.comment ?: "") }
     var error by remember { mutableStateOf<String?>(null) }
+    var saving by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -407,12 +447,24 @@ private fun RecordDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = {
-                val err = vm.save(record?.id ?: 0L, name, weight, reps, date, comment)
-                if (err == null) {
-                    onSuccess(name, weight, reps)
-                    onDismiss()
-                } else error = err
+            TextButton(enabled = !saving, onClick = {
+                saving = true
+                val submittedName = name
+                val submittedWeight = weight
+                val submittedReps = reps
+                val submittedDate = date
+                val submittedComment = comment
+                scope.launch {
+                    try {
+                        error = vm.save(record?.id ?: 0L, submittedName, submittedWeight, submittedReps, submittedDate, submittedComment)
+                        if (error == null) {
+                            onSuccess(submittedName, submittedWeight, submittedReps)
+                            onDismiss()
+                        }
+                    } finally {
+                        saving = false
+                    }
+                }
             }) { Text("Сохранить") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } }
@@ -420,61 +472,32 @@ private fun RecordDialog(
 }
 
 /** Линия изменения рабочего веса по датам. Точки — настоящие записи пользователя. */
-@Composable
-private fun ProgressChart(records: List<RecordEntity>) {
-    val points = records.sortedBy { it.dateEpochDay }
-    val minW = points.minOf { it.weight }
-    val maxW = points.maxOf { it.weight }
-    val brush = LocalGradient.current.brush
-    val dot = MaterialTheme.colorScheme.primary
-    ZCard {
-        Text("Динамика рабочего веса", fontWeight = FontWeight.Bold)
-        Text("От ${Fmt.weight(minW)} до ${Fmt.weight(maxW)} кг · записей: ${points.size}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Spacer(Modifier.height(8.dp))
-        Canvas(Modifier.fillMaxWidth().height(120.dp)) {
-            val pad = 12.dp.toPx()
-            val w = size.width - 2 * pad
-            val h = size.height - 2 * pad
-            val range = (maxW - minW).takeIf { it > 0 } ?: 1.0
-            fun pos(i: Int): Offset {
-                val x = pad + w * i / (points.size - 1)
-                val y = if (maxW == minW) size.height / 2 else pad + h * (1f - ((points[i].weight - minW) / range).toFloat())
-                return Offset(x, y)
-            }
-            val path = Path().apply { points.indices.forEach { i -> pos(i).let { if (i == 0) moveTo(it.x, it.y) else lineTo(it.x, it.y) } } }
-            drawPath(path, brush, style = Stroke(4.dp.toPx(), cap = StrokeCap.Round))
-            points.indices.forEach { i -> drawCircle(dot, 5.dp.toPx(), pos(i)) }
-        }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(Fmt.shortDate(points.first().dateEpochDay), style = MaterialTheme.typography.labelSmall)
-            Text(Fmt.shortDate(points.last().dateEpochDay), style = MaterialTheme.typography.labelSmall)
-        }
-    }
-}
-
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun RecordCard(
     record: RecordEntity,
+    weightWidth: Dp,
+    repsWidth: Dp,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
     onFavoriteToggle: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val cardBg = Color(0xFF1B1D25)
-    val borderColor = Color(0xFF282B36)
-    val limeColor = Color(0xFFA6FF00)
-    val labelColor = Color(0xFFA0A7B8)
-    val datePillBg = Color(0xFF242732)
-    val datePillBorder = Color(0xFF333644)
+    val limeColor = DenTrainPalette.Lime
+    val labelColor = DenTrainPalette.MutedText
+    val datePillBg = DenTrainPalette.RaisedPanel
+    val datePillBorder = DenTrainPalette.Border
+    val weightText = remember(record.weight) { Fmt.weight(record.weight) ?: "0" }
+    val dateText = remember(record.dateEpochDay) { Fmt.shortDate(record.dateEpochDay) }
+    val editRecord by rememberUpdatedState(onEdit)
+    val shape = RoundedCornerShape(16.dp)
 
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
-            .background(cardBg)
-            .border(BorderStroke(1.dp, borderColor), RoundedCornerShape(16.dp))
+            .background(DenTrainPalette.Panel, shape)
+            .border(1.dp, DenTrainPalette.SubtleBorder, shape)
             .pointerInput(Unit) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
@@ -494,7 +517,7 @@ private fun RecordCard(
                     }
                     if (change == null) {
                         Haptic.click(context)
-                        onEdit()
+                        editRecord()
                     }
                 }
             }
@@ -565,12 +588,14 @@ private fun RecordCard(
             ) {
                 // Вес + кг (на одной базовой линии)
                 Row(verticalAlignment = Alignment.Bottom) {
-                    Text(
-                        text = Fmt.weight(record.weight) ?: "0",
+                    MetricNumber(
+                        text = weightText,
+                        minDigits = 3,
                         fontSize = 26.sp,
                         fontWeight = FontWeight.ExtraBold,
                         color = limeColor,
-                        lineHeight = 26.sp
+                        lineHeight = 26.sp,
+                        minWidth = weightWidth
                     )
                     Spacer(Modifier.width(4.dp))
                     Text(
@@ -593,12 +618,14 @@ private fun RecordCard(
 
                 // Повторения: 8 повторений
                 Row(verticalAlignment = Alignment.Bottom) {
-                    Text(
+                    MetricNumber(
                         text = record.reps.toString(),
+                        minDigits = 2,
                         fontSize = 26.sp,
                         fontWeight = FontWeight.ExtraBold,
                         color = Color.White,
-                        lineHeight = 26.sp
+                        lineHeight = 26.sp,
+                        minWidth = repsWidth
                     )
                     Spacer(Modifier.width(5.dp))
                     Text(
@@ -615,8 +642,7 @@ private fun RecordCard(
                 // Компактная капсула даты максимально справа
                 Box(
                     modifier = Modifier
-                        .clip(CircleShape)
-                        .background(datePillBg)
+                        .background(datePillBg, CircleShape)
                         .border(BorderStroke(1.dp, datePillBorder), CircleShape)
                         .padding(horizontal = 8.dp, vertical = 3.dp)
                 ) {
@@ -631,7 +657,7 @@ private fun RecordCard(
                             modifier = Modifier.size(11.dp)
                         )
                         Text(
-                            text = Fmt.shortDate(record.dateEpochDay),
+                            text = dateText,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Medium,
                             color = labelColor
@@ -659,6 +685,8 @@ fun RecordsScreenPreview() {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             GradientButton("Добавить рекорд", {}, Modifier.fillMaxWidth(), icon = Icons.Filled.Add)
             RecordCard(
+                weightWidth = rememberMetricNumberWidth(3, 26.sp, FontWeight.ExtraBold, 26.sp),
+                repsWidth = rememberMetricNumberWidth(2, 26.sp, FontWeight.ExtraBold, 26.sp),
                 record = RecordEntity(
                     id = 1,
                     exerciseName = "Жим штанги лёжа",
@@ -751,7 +779,7 @@ fun RecordSearchHeader(
 
         // Search Field (BasicTextField для точного контроля высоты и плавной анимации)
         val searchBorderColor by animateColorAsState(
-            targetValue = if (isFocused) Color.White else Color(0xFF333644),
+            targetValue = if (isFocused) Color.White else DenTrainPalette.Border,
             animationSpec = tween(300),
             label = "searchBorder"
         )
@@ -774,7 +802,7 @@ fun RecordSearchHeader(
                     .fillMaxWidth()
                     .height(48.dp)
                     .onGloballyPositioned { textFieldWidth = it.size.width }
-                    .background(Color(0xFF1B1D25), RoundedCornerShape(24.dp))
+                    .background(DenTrainPalette.Panel, RoundedCornerShape(24.dp))
                     .border(1.dp, searchBorderColor, RoundedCornerShape(24.dp))
                     .onFocusChanged {
                         isFocused = it.isFocused
@@ -791,13 +819,13 @@ fun RecordSearchHeader(
                         Icon(
                             imageVector = Icons.Filled.Search,
                             contentDescription = "Поиск",
-                            tint = Color(0xFFA0A7B8),
+                            tint = DenTrainPalette.MutedText,
                             modifier = Modifier.size(20.dp)
                         )
                         Spacer(Modifier.width(8.dp))
                         Box(Modifier.weight(1f)) {
                             if (text.isEmpty()) {
-                                Text("Найти рекорд", color = Color(0xFFA0A7B8), fontSize = 15.sp)
+                                Text("Найти рекорд", color = DenTrainPalette.MutedText, fontSize = 15.sp)
                             }
                             innerTextField()
                         }
@@ -819,7 +847,7 @@ fun RecordSearchHeader(
                         modifier = Modifier
                             .width(widthDp)
                             .heightIn(max = (5 * 48).dp)
-                            .border(1.dp, Color(0xFF333644), RoundedCornerShape(12.dp)),
+                            .border(1.dp, DenTrainPalette.Border, RoundedCornerShape(12.dp)),
                         shape = RoundedCornerShape(12.dp),
                         colors = CardDefaults.cardColors(containerColor = Color(0xFF222B3D)),
                         elevation = CardDefaults.cardElevation(8.dp)
@@ -856,7 +884,7 @@ fun RecordSearchHeader(
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 // [Favorite Filter]
                 val favBtnBg = if (isFavoritesOnly) Color(0xFF333D55) else Color(0xFF222B3D)
-                val favBtnBorder = if (isFavoritesOnly) Color(0xFF00B0FF).copy(alpha = 0.5f) else Color(0xFF333644)
+                val favBtnBorder = if (isFavoritesOnly) Color(0xFF00B0FF).copy(alpha = 0.5f) else DenTrainPalette.Border
                 
                 IconButton(
                     onClick = onFavoriteFilterToggle,
@@ -883,7 +911,7 @@ fun RecordSearchHeader(
                             Icon(
                                 imageVector = Icons.Filled.FavoriteBorder,
                                 contentDescription = "Not Favorite",
-                                tint = Color(0xFFA0A7B8),
+                                tint = DenTrainPalette.MutedText,
                                 modifier = Modifier.size(24.dp)
                             )
                         }
@@ -892,7 +920,7 @@ fun RecordSearchHeader(
 
                 // [Filter]
                 val filterBtnBg = if (isFilterActive) Color(0xFF333D55) else Color(0xFF222B3D)
-                val filterBtnBorder = if (isFilterActive) Color(0xFF00B0FF).copy(alpha = 0.5f) else Color(0xFF333644)
+                val filterBtnBorder = if (isFilterActive) Color(0xFF00B0FF).copy(alpha = 0.5f) else DenTrainPalette.Border
                 val filterIconColor = if (isFilterActive) Color(0xFF00B0FF) else Color.White
 
                 IconButton(

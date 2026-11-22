@@ -18,8 +18,16 @@ data class DirectStopwatchState(
     val delayRemainingMs: Long = 0L,
     val selectedDelaySec: Int = 0,
     val isDelaying: Boolean = false,
-    val isRunning: Boolean = false
-)
+    val isRunning: Boolean = false,
+    val elapsedOriginMs: Long? = null,
+    val delayEndsAtMs: Long? = null,
+    val laps: List<StopwatchLap> = emptyList()
+) {
+    fun elapsedNow(nowMs: Long = SystemClock.elapsedRealtime()): Long =
+        elapsedOriginMs?.let { (nowMs - it).coerceAtLeast(0L) } ?: elapsedMs
+}
+
+data class StopwatchLap(val number: Int, val elapsedMs: Long, val durationMs: Long)
 
 /**
  * Прямой секундомер с поддержкой отсрочки старта (например, 5 или 10 секунд).
@@ -29,8 +37,6 @@ class StopwatchTimer(private val context: Context) {
     private val _state = MutableStateFlow(DirectStopwatchState())
     val state: StateFlow<DirectStopwatchState> = _state.asStateFlow()
 
-    private var startRealtime = 0L
-    private var baseElapsedMs = 0L
     private var timerJob: Job? = null
 
     fun setDelay(seconds: Int) {
@@ -52,13 +58,14 @@ class StopwatchTimer(private val context: Context) {
         timerJob?.cancel()
         val delayTotalMs = seconds * 1000L
         val delayEndAt = SystemClock.elapsedRealtime() + delayTotalMs
-        _state.update { it.copy(isDelaying = true, delayRemainingMs = delayTotalMs) }
+        _state.update {
+            it.copy(isDelaying = true, delayRemainingMs = delayTotalMs, delayEndsAtMs = delayEndAt)
+        }
 
         timerJob = scope.launch {
             while (true) {
                 val left = delayEndAt - SystemClock.elapsedRealtime()
                 if (left <= 0) {
-                    _state.update { it.copy(isDelaying = false, delayRemainingMs = 0L) }
                     TimerNotifier.notifyFinished(context)
                     startCountUp()
                     break
@@ -71,16 +78,16 @@ class StopwatchTimer(private val context: Context) {
 
     private fun startCountUp() {
         timerJob?.cancel()
-        startRealtime = SystemClock.elapsedRealtime()
-        baseElapsedMs = _state.value.elapsedMs
-        _state.update { it.copy(isRunning = true, isDelaying = false) }
-
-        timerJob = scope.launch {
-            while (true) {
-                val currentElapsed = baseElapsedMs + (SystemClock.elapsedRealtime() - startRealtime)
-                _state.update { it.copy(elapsedMs = currentElapsed) }
-                delay(50)
-            }
+        timerJob = null
+        val now = SystemClock.elapsedRealtime()
+        _state.update {
+            it.copy(
+                isRunning = true,
+                isDelaying = false,
+                delayRemainingMs = 0L,
+                delayEndsAtMs = null,
+                elapsedOriginMs = now - it.elapsedMs
+            )
         }
     }
 
@@ -88,24 +95,26 @@ class StopwatchTimer(private val context: Context) {
         timerJob?.cancel()
         timerJob = null
         if (_state.value.isDelaying) {
-            _state.update { it.copy(isDelaying = false, delayRemainingMs = 0L) }
+            _state.update { it.copy(isDelaying = false, delayRemainingMs = 0L, delayEndsAtMs = null) }
         } else if (_state.value.isRunning) {
-            val currentElapsed = baseElapsedMs + (SystemClock.elapsedRealtime() - startRealtime)
-            _state.update { it.copy(elapsedMs = currentElapsed, isRunning = false) }
+            _state.update { it.copy(elapsedMs = it.elapsedNow(), isRunning = false, elapsedOriginMs = null) }
+        }
+    }
+
+    fun lap() {
+        _state.update { current ->
+            if (!current.isRunning) return@update current
+            val elapsed = current.elapsedNow()
+            val previous = current.laps.lastOrNull()?.elapsedMs ?: 0L
+            if (elapsed <= previous) return@update current
+            val lap = StopwatchLap(current.laps.size + 1, elapsed, elapsed - previous)
+            current.copy(laps = current.laps + lap)
         }
     }
 
     fun reset() {
         timerJob?.cancel()
         timerJob = null
-        baseElapsedMs = 0L
-        _state.update {
-            it.copy(
-                elapsedMs = 0L,
-                delayRemainingMs = 0L,
-                isDelaying = false,
-                isRunning = false
-            )
-        }
+        _state.update { DirectStopwatchState(selectedDelaySec = it.selectedDelaySec) }
     }
 }

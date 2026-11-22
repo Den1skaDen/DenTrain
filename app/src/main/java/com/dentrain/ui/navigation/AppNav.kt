@@ -1,7 +1,5 @@
 package com.dentrain.ui.navigation
 
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -13,18 +11,22 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.BarChart
@@ -36,14 +38,25 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavType
@@ -52,20 +65,24 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.dentrain.DenTrainApp
 import com.dentrain.ui.admin.AdminScreen
 import com.dentrain.ui.auth.AuthScreen
+import com.dentrain.ui.components.appViewModel
 import com.dentrain.ui.history.HistoryScreen
+import com.dentrain.ui.history.HistoryViewModel
 import com.dentrain.ui.history.WorkoutDetailScreen
 import com.dentrain.ui.profile.ProfileScreen
 import com.dentrain.ui.records.RecordsScreen
+import com.dentrain.ui.records.RecordsViewModel
 import com.dentrain.ui.settings.SettingsScreen
 import com.dentrain.ui.stopwatch.StopwatchScreen
+import com.dentrain.ui.theme.LocalSplashActive
 import com.dentrain.ui.trainer.TrainerScreen
 import com.dentrain.ui.workout.SessionScreen
 import com.dentrain.ui.workout.WorkoutEditorScreen
 import com.dentrain.ui.workout.WorkoutHomeScreen
-import com.google.firebase.auth.FirebaseAuth
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.first
 
 /** Основные вкладки нижней панели. */
 enum class Tab(val label: String, val icon: ImageVector) {
@@ -83,20 +100,30 @@ private const val ROUTE_DETAIL = "detail/{id}"
 private const val ROUTE_SETTINGS = "settings"
 private const val ROUTE_ADMIN = "admin"
 private const val ROUTE_TRAINER = "trainer"
+private const val ROUTE_TRAINER_REQUESTS = "trainer/requests"
 
 @Composable
-fun AppNav() {
+fun AppNav(startAtHome: Boolean, loginLogoModifier: Modifier = Modifier) {
     val nav = rememberNavController()
+    val currentLoginLogoModifier by rememberUpdatedState(loginLogoModifier)
     val entry by nav.currentBackStackEntryAsState()
     val currentRoute = entry?.destination?.route
-    val isMainTabs = currentRoute == ROUTE_MAIN || currentRoute == null
+    val isMainTabs = currentRoute == ROUTE_MAIN || (currentRoute == null && startAtHome)
 
-    val currentUser = FirebaseAuth.getInstance().currentUser
-    val isVerifiedUser = currentUser != null
-    val startDest = if (isVerifiedUser) ROUTE_MAIN else ROUTE_AUTH
+    val app = LocalContext.current.applicationContext as DenTrainApp
+    val account = app.container
+    LaunchedEffect(account.uid) {
+        if (account.uid == null && nav.currentDestination?.route != ROUTE_AUTH) {
+            nav.navigate(ROUTE_AUTH) { popUpTo(nav.graph.id) { inclusive = true } }
+        }
+    }
 
     val pagerState = rememberPagerState(pageCount = { Tab.entries.size })
-    val scope = rememberCoroutineScope()
+    val focusManager = LocalFocusManager.current
+    val selectTab: (Int) -> Unit = { index ->
+        if (index != pagerState.currentPage) focusManager.clearFocus()
+        pagerState.requestScrollToPage(index)
+    }
     val idArg = listOf(navArgument("id") { type = NavType.LongType })
 
     Scaffold(
@@ -108,11 +135,13 @@ fun AppNav() {
                     modifier = Modifier
                         .fillMaxWidth()
                         .background(MaterialTheme.colorScheme.surface)
+                        .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal))
                         .navigationBarsPadding()
-                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    contentAlignment = Alignment.Center
                 ) {
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.widthIn(max = 600.dp).fillMaxWidth().selectableGroup(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -121,11 +150,8 @@ fun AppNav() {
                             NavItem(
                                 tab = tab,
                                 isSelected = pagerState.currentPage == index,
-                                onClick = {
-                                    scope.launch {
-                                        pagerState.animateScrollToPage(index, animationSpec = spring(stiffness = Spring.StiffnessMediumLow, dampingRatio = Spring.DampingRatioNoBouncy))
-                                    }
-                                }
+                                onClick = { selectTab(index) },
+                                modifier = Modifier.weight(1f)
                             )
                         }
 
@@ -147,11 +173,8 @@ fun AppNav() {
                             NavItem(
                                 tab = tab,
                                 isSelected = pagerState.currentPage == index,
-                                onClick = {
-                                    scope.launch {
-                                        pagerState.animateScrollToPage(index, animationSpec = spring(stiffness = Spring.StiffnessMediumLow, dampingRatio = Spring.DampingRatioNoBouncy))
-                                    }
-                                }
+                                onClick = { selectTab(index) },
+                                modifier = Modifier.weight(1f)
                             )
                         }
                     }
@@ -161,8 +184,10 @@ fun AppNav() {
     ) { pad ->
         NavHost(
             navController = nav,
-            startDestination = startDest,
-            modifier = Modifier.padding(bottom = pad.calculateBottomPadding()),
+            startDestination = if (startAtHome) ROUTE_MAIN else ROUTE_AUTH,
+            modifier = Modifier
+                .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal))
+                .padding(bottom = pad.calculateBottomPadding()),
             enterTransition = { fadeIn(tween(220)) },
             exitTransition = { fadeOut(tween(180)) },
             popEnterTransition = { fadeIn(tween(220)) },
@@ -170,7 +195,9 @@ fun AppNav() {
         ) {
             composable(ROUTE_AUTH) {
                 AuthScreen(
+                    logoModifier = currentLoginLogoModifier,
                     onAuthSuccess = {
+                        pagerState.requestScrollToPage(Tab.Home.ordinal)
                         nav.navigate(ROUTE_MAIN) {
                             popUpTo(ROUTE_AUTH) { inclusive = true }
                         }
@@ -179,34 +206,64 @@ fun AppNav() {
             }
 
             composable(ROUTE_MAIN) {
-                Column(Modifier.fillMaxSize()) {
-                    HorizontalPager(
-                        state = pagerState,
-                        beyondViewportPageCount = 1,
-                        modifier = Modifier.weight(1f)
-                    ) { page ->
-                        when (page) {
-                            0 -> WorkoutHomeScreen(
-                                onCreate = { nav.navigate("editor/0") },
-                                onEdit = { nav.navigate("editor/$it") },
-                                onOpenSession = { nav.navigate("session/$it") },
-                                onOpenDetail = { nav.navigate("detail/$it") },
-                                onSettings = { nav.navigate(ROUTE_SETTINGS) },
-                                onOpenTimer = { nav.navigate("stopwatch") }
-                            )
-                            1 -> HistoryScreen(
-                                onOpenDetail = { nav.navigate("detail/$it") },
-                                onSettings = { nav.navigate(ROUTE_SETTINGS) }
-                            )
-                            2 -> RecordsScreen(onSettings = { nav.navigate(ROUTE_SETTINGS) })
-                            3 -> ProfileScreen(
-                                onLogout = {
-                                    nav.navigate(ROUTE_AUTH) { popUpTo(0) { inclusive = true } }
-                                },
-                                onOpenAdmin = { nav.navigate(ROUTE_ADMIN) },
-                                onOpenTrainer = { nav.navigate(ROUTE_TRAINER) },
-                                onOpenSettings = { nav.navigate(ROUTE_SETTINGS) }
-                            )
+                val tabAccount = app.container
+                if (tabAccount.uid == null) return@composable
+                key(tabAccount) {
+                    val history = appViewModel { HistoryViewModel(it.repository, it.screenCache) }
+                    val records = appViewModel { RecordsViewModel(it.repository, it.screenCache) }
+                    val splashActive = LocalSplashActive.current
+                    var pagesToKeep by remember { mutableIntStateOf(0) }
+                    LaunchedEffect(splashActive) {
+                        if (!splashActive) {
+                            // Give the visible page a frame before laying out each group of offscreen pages.
+                            while (pagesToKeep < Tab.entries.lastIndex) {
+                                snapshotFlow { pagerState.isScrollInProgress }.first { !it }
+                                withFrameNanos { }
+                                if (!pagerState.isScrollInProgress) pagesToKeep++
+                            }
+                        }
+                    }
+                    LaunchedEffect(pagerState, focusManager) {
+                        var previous = pagerState.settledPage
+                        snapshotFlow { pagerState.settledPage }.collect { page ->
+                            if (previous == Tab.Progress.ordinal && page != previous) focusManager.clearFocus()
+                            previous = page
+                        }
+                    }
+                    Column(Modifier.fillMaxSize()) {
+                        HorizontalPager(
+                            state = pagerState,
+                            beyondViewportPageCount = pagesToKeep,
+                            modifier = Modifier.weight(1f)
+                        ) { page ->
+                            when (page) {
+                                0 -> WorkoutHomeScreen(
+                                    onCreate = { nav.navigate("editor/0") },
+                                    onEdit = { nav.navigate("editor/$it") },
+                                    onOpenSession = { nav.navigate("session/$it") },
+                                    onOpenDetail = { nav.navigate("detail/$it") },
+                                    onSettings = { nav.navigate(ROUTE_SETTINGS) },
+                                    onOpenTimer = { nav.navigate("stopwatch") },
+                                    onOpenTrainerRequests = { nav.navigate(ROUTE_TRAINER_REQUESTS) }
+                                )
+                                1 -> HistoryScreen(
+                                    vm = history,
+                                    onOpenDetail = { nav.navigate("detail/$it") },
+                                    onSettings = { nav.navigate(ROUTE_SETTINGS) }
+                                )
+                                2 -> RecordsScreen(vm = records, onSettings = { nav.navigate(ROUTE_SETTINGS) })
+                                3 -> ProfileScreen(
+                                    onLogout = {
+                                        nav.navigate(ROUTE_AUTH) {
+                                            popUpTo(ROUTE_MAIN) { inclusive = true }
+                                            launchSingleTop = true
+                                        }
+                                    },
+                                    onOpenAdmin = { nav.navigate(ROUTE_ADMIN) },
+                                    onOpenTrainer = { nav.navigate(ROUTE_TRAINER) },
+                                    onOpenSettings = { nav.navigate(ROUTE_SETTINGS) }
+                                )
+                            }
                         }
                     }
                 }
@@ -234,26 +291,34 @@ fun AppNav() {
                     onRepeated = { newId -> nav.navigate("editor/$newId") }
                 )
             }
-            composable(ROUTE_SETTINGS) { SettingsScreen(onBack = { nav.popBackStack() }, onLogout = { FirebaseAuth.getInstance().signOut() }) }
+            composable(ROUTE_SETTINGS) { SettingsScreen(onBack = { nav.popBackStack() }) }
             composable(ROUTE_ADMIN) { AdminScreen(onBack = { nav.popBackStack() }) }
             composable(ROUTE_TRAINER) { TrainerScreen(onBack = { nav.popBackStack() }) }
-            composable("stopwatch") { StopwatchScreen(onSettings = { nav.navigate(ROUTE_SETTINGS) }) }
+            composable(ROUTE_TRAINER_REQUESTS) {
+                TrainerScreen(onBack = { nav.popBackStack() }, openRequests = true)
+            }
+            composable("stopwatch") { StopwatchScreen(onBack = { nav.popBackStack() }) }
         }
     }
 }
 
 @Composable
-private fun NavItem(tab: Tab, isSelected: Boolean, onClick: () -> Unit) {
+private fun NavItem(tab: Tab, isSelected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier
-            .clickable(onClick = onClick)
-            .padding(8.dp)
-            .width(56.dp)
+        modifier = modifier
+            .selectable(selected = isSelected, role = Role.Tab, onClick = onClick)
+            .padding(horizontal = 2.dp, vertical = 8.dp)
     ) {
         Icon(tab.icon, contentDescription = tab.label, tint = color, modifier = Modifier.size(24.dp))
         Spacer(Modifier.height(4.dp))
-        Text(tab.label, color = color, fontSize = 10.sp, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal)
+        Text(
+            text = tab.label,
+            color = color,
+            fontSize = 10.sp,
+            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+            textAlign = TextAlign.Center
+        )
     }
 }

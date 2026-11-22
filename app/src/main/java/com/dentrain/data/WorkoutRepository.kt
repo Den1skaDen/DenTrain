@@ -4,9 +4,15 @@ import androidx.room.withTransaction
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import java.time.LocalDate
+
+internal const val BETTER_RECORD_EXISTS = "Уже есть результат с таким же или большим весом и числом повторений"
 
 /** Упражнение в форме редактора (уже проверенное и разобранное). */
 data class ExerciseDraft(
@@ -23,28 +29,41 @@ data class WorkoutDraft(
     val epochDay: Long,
     val dayOfWeek: Int,
     val description: String,
-    val exercises: List<ExerciseDraft>
+    val exercises: List<ExerciseDraft>,
+    val assignmentId: String? = null
 )
 
 /**
  * Единая точка доступа к данным. ViewModel'и ничего не знают о Room —
  * только об этом классе.
  */
-class WorkoutRepository(private val db: AppDatabase) {
+class WorkoutRepository(private val db: AppDatabase, private val owner: String?) {
     private val workouts = db.workoutDao()
     private val records = db.recordDao()
     private val settingsDao = db.settingsDao()
+    private fun activeOwner() = owner?.takeIf { it == FirebaseAuth.getInstance().uid }
 
-    val planned: Flow<List<WorkoutWithExercises>> = workouts.observeByStatus(WorkoutStatus.PLANNED)
-    val completed: Flow<List<WorkoutWithExercises>> = workouts.observeByStatus(WorkoutStatus.COMPLETED)
-    val inProgress: Flow<WorkoutWithExercises?> =
-        workouts.observeByStatus(WorkoutStatus.IN_PROGRESS).map { it.firstOrNull() }
-    val pinned: Flow<List<WorkoutWithExercises>> = workouts.observePinned()
+    val planned: Flow<List<WorkoutWithExercises>> = workouts.observePlanned(WorkoutStatus.PLANNED)
+    val history: Flow<List<WorkoutListEntry>> = workouts.observeHistory(WorkoutStatus.COMPLETED)
+    suspend fun previousWorkout(dayOfWeek: Int, beforeDay: Long): WorkoutWithExercises? =
+        workouts.previousWorkout(WorkoutStatus.COMPLETED, dayOfWeek, beforeDay)
+    val inProgress: Flow<WorkoutWithExercises?> = workouts.observeLatestByStatus(WorkoutStatus.IN_PROGRESS)
+    val pinned: Flow<List<WorkoutListEntry>> = workouts.observePinned()
     val pinnedIds: Flow<List<Long>> = workouts.observePinnedIds()
-    val allWorkouts: Flow<List<WorkoutWithExercises>> = workouts.observeAll()
+    val calendarWorkouts: Flow<List<CalendarWorkout>> = workouts.observeCalendarWorkouts()
     val allRecords: Flow<List<RecordEntity>> = records.observeAll()
     val settings: Flow<SettingsEntity> = settingsDao.observe().map { it ?: SettingsEntity() }
     val recentExerciseNames: Flow<List<String>> = workouts.observeRecentExerciseNames()
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    internal fun observeWorkingSetsForProgress(exerciseName: String): Flow<List<WorkingSetForProgress>> =
+        recentExerciseNames
+            .map { names -> names.filter { it.trim().equals(exerciseName, ignoreCase = true) } }
+            .distinctUntilChanged()
+            .flatMapLatest { names ->
+                if (names.isEmpty()) flowOf(emptyList())
+                else workouts.observeWorkingSetsForProgress(names, WorkoutStatus.IN_PROGRESS, WorkoutStatus.COMPLETED)
+            }
 
     fun observeWorkout(id: Long): Flow<WorkoutWithExercises?> = workouts.observe(id)
     suspend fun getWorkout(id: Long): WorkoutWithExercises? = workouts.getFull(id)
@@ -57,10 +76,14 @@ class WorkoutRepository(private val db: AppDatabase) {
     suspend fun saveWorkout(d: WorkoutDraft): Long = db.withTransaction {
         val workoutId: Long
         if (d.id == 0L) {
+            d.assignmentId?.let { assignment ->
+                workouts.findAssignment(assignment)?.let { return@withTransaction it }
+            }
             workoutId = workouts.insertWorkout(
                 WorkoutEntity(
                     title = d.title, dateEpochDay = d.epochDay,
-                    dayOfWeek = d.dayOfWeek, description = d.description
+                    dayOfWeek = d.dayOfWeek, description = d.description,
+                    assignmentId = d.assignmentId
                 )
             )
         } else {
@@ -86,35 +109,38 @@ class WorkoutRepository(private val db: AppDatabase) {
     }
 
     suspend fun startWorkout(id: Long) {
-        val w = workouts.getWorkout(id) ?: return
-        workouts.updateWorkout(
-            w.copy(status = WorkoutStatus.IN_PROGRESS, currentExerciseIndex = 0, startedAt = System.currentTimeMillis())
-        )
+        workouts.startWorkout(id, WorkoutStatus.IN_PROGRESS, System.currentTimeMillis())
     }
 
     suspend fun finishWorkout(id: Long) {
-        val w = workouts.getFull(id) ?: return
-        val updatedWorkout = w.workout.copy(status = WorkoutStatus.COMPLETED, completedAt = System.currentTimeMillis())
-        workouts.updateWorkout(updatedWorkout)
-        
-        // Синхронизация выполненной тренировки с облаком Firebase
-        syncCompletedWorkoutToCloud(w.copy(workout = updatedWorkout))
+        val completed = db.withTransaction {
+            val w = workouts.getFull(id) ?: return@withTransaction null
+            val updated = w.workout.copy(
+                status = WorkoutStatus.COMPLETED,
+                completedAt = w.workout.completedAt ?: System.currentTimeMillis(),
+                cloudId = w.workout.cloudId ?: java.util.UUID.randomUUID().toString()
+            )
+            workouts.updateWorkout(updated)
+            w.copy(workout = updated)
+        } ?: return
+        syncCompletedWorkoutToCloud(completed)
     }
 
-    private suspend fun syncCompletedWorkoutToCloud(w: WorkoutWithExercises) {
-        val uid = FirebaseAuth.getInstance().uid ?: return
+    private fun syncCompletedWorkoutToCloud(w: WorkoutWithExercises) {
+        val uid = activeOwner() ?: return
         try {
             val firestore = FirebaseFirestore.getInstance()
-            val docRef = firestore.collection("completed_workouts").document()
-            val exercisesList = w.exercises.map { exWithSets ->
-                val setsList = exWithSets.sets.map { s ->
-                    mapOf(
-                        "setNumber" to s.setNumber,
-                        "reps" to s.reps,
-                        "weight" to s.weight,
-                        "isTimeBased" to s.isTimeBased,
-                        "isWarmup" to s.isWarmup
-                    )
+            val docRef = firestore.collection("completed_workouts").document(requireNotNull(w.workout.cloudId))
+            val exercisesList = w.exercises.sortedBy { it.exercise.position }.map { exWithSets ->
+                val setsList = exWithSets.sets.sortedBy { it.setNumber }.map { s ->
+                    buildMap<String, Any> {
+                        put("setNumber", s.setNumber)
+                        put("reps", s.reps)
+                        s.weight?.let { put("weight", it) }
+                        if (s.isTimeBased) put("isTimeBased", true)
+                        if (s.isWarmup) put("isWarmup", true)
+                        put("completedAt", s.completedAt)
+                    }
                 }
                 mapOf(
                     "name" to exWithSets.exercise.name,
@@ -133,38 +159,50 @@ class WorkoutRepository(private val db: AppDatabase) {
                 "completedAt" to w.workout.completedAt,
                 "description" to w.workout.description,
                 "exercises" to exercisesList,
-                "createdAt" to System.currentTimeMillis()
+                "createdAt" to w.workout.completedAt
             )
-            docRef.set(data).await()
+            docRef.set(data).addOnFailureListener {
+                android.util.Log.w("WorkoutRepository", "Could not publish completed workout", it)
+            }
 
             // Если эта тренировка была назначена тренером — меняем статус в assigned_workouts на "completed"
-            val assignedSnap = firestore.collection("assigned_workouts")
-                .whereEqualTo("athleteUid", uid)
-                .whereEqualTo("title", w.workout.title)
-                .whereEqualTo("dateEpochDay", w.workout.dateEpochDay)
-                .get().await()
-            for (assignedDoc in assignedSnap.documents) {
-                assignedDoc.reference.update("status", "completed").await()
+            w.workout.assignmentId?.let {
+                firestore.collection("assigned_workouts").document(it).update("status", "completed")
+                    .addOnFailureListener { error -> android.util.Log.w("WorkoutRepository", "Could not complete assignment", error) }
             }
         } catch (_: Exception) {}
     }
 
-    suspend fun setCurrentExercise(id: Long, index: Int) {
-        val w = workouts.getWorkout(id) ?: return
-        workouts.updateWorkout(w.copy(currentExerciseIndex = index))
-    }
+    suspend fun setCurrentExercise(id: Long, index: Int) = workouts.updateCurrentExercise(id, index)
 
     suspend fun deleteWorkout(id: Long) = workouts.deleteWorkout(id)
 
-    suspend fun updateWorkoutDescription(id: Long, description: String) {
-        val w = workouts.getWorkout(id) ?: return
-        workouts.updateWorkout(w.copy(description = description))
-    }
+    suspend fun updateWorkoutDescription(id: Long, description: String) = workouts.updateDescription(id, description)
 
     // ----- подходы -----
 
-    suspend fun addSet(exerciseId: Long, setNumber: Int, reps: Int, weight: Double?, isTimeBased: Boolean, isWarmup: Boolean = false) {
-        workouts.insertSet(SetResultEntity(exerciseId = exerciseId, setNumber = setNumber, reps = reps, weight = weight, isTimeBased = isTimeBased, isWarmup = isWarmup))
+    suspend fun addSet(
+        exerciseId: Long,
+        reps: Int,
+        weight: Double?,
+        isTimeBased: Boolean,
+        isWarmup: Boolean = false
+    ): RecordEntity? = db.withTransaction {
+        workouts.insertSet(
+            SetResultEntity(
+                exerciseId = exerciseId, setNumber = workouts.nextSetNumber(exerciseId),
+                reps = reps, weight = weight, isTimeBased = isTimeBased, isWarmup = isWarmup
+            )
+        )
+        if (isWarmup || isTimeBased || weight == null || !weight.isFinite() || weight <= 0 || reps <= 0) {
+            return@withTransaction null
+        }
+        storeRecord(RecordEntity(
+            exerciseName = workouts.getExerciseName(exerciseId),
+            weight = weight,
+            reps = reps,
+            dateEpochDay = LocalDate.now().toEpochDay()
+        ))
     }
 
     suspend fun updateSet(set: SetResultEntity, reps: Int, weight: Double?, isWarmup: Boolean = set.isWarmup) {
@@ -173,26 +211,42 @@ class WorkoutRepository(private val db: AppDatabase) {
 
     /** После удаления подхода номера оставшихся пересчитываются, чтобы не было дыр (1, 3, 4). */
     suspend fun deleteSet(set: SetResultEntity) = db.withTransaction {
+        val existing = workouts.getSets(set.exerciseId)
+        val stored = existing.firstOrNull { it.id == set.id } ?: return@withTransaction
+        if (!stored.isWarmup) {
+            workouts.decreasePlanAfterWorkingSetDeletion(set.exerciseId, existing.count { !it.isWarmup })
+        }
         workouts.deleteSet(set.id)
-        workouts.getSets(set.exerciseId).forEachIndexed { i, s ->
+        existing.filterNot { it.id == set.id }.forEachIndexed { i, s ->
             if (s.setNumber != i + 1) workouts.updateSet(s.copy(setNumber = i + 1))
         }
     }
 
     /** Добавить ещё один плановый подход к упражнению. */
-    suspend fun addPlannedSet(e: ExerciseEntity) {
-        workouts.updateExercise(e.copy(plannedSets = e.plannedSets + 1))
-    }
+    suspend fun addPlannedSet(exerciseId: Long) = workouts.increasePlannedSets(exerciseId)
 
-    /** Уменьшить число плановых подходов к упражнению (не меньше 1). */
-    suspend fun removePlannedSet(e: ExerciseEntity) {
-        if (e.plannedSets > 1) {
-            workouts.updateExercise(e.copy(plannedSets = e.plannedSets - 1))
+    suspend fun removePlannedSet(exerciseId: Long) = workouts.removePendingPlannedSet(exerciseId)
+
+    suspend fun deleteSessionExercise(workoutId: Long, exerciseId: Long) = db.withTransaction {
+        val workout = workouts.getFull(workoutId) ?: return@withTransaction
+        val ordered = workout.exercises.sortedBy { it.exercise.position }
+        val removed = ordered.indexOfFirst { it.exercise.id == exerciseId }
+        if (removed < 0) return@withTransaction
+        val entry = ordered[removed]
+        if (maxOf(entry.exercise.plannedSets, entry.sets.count { !it.isWarmup }) != 1) return@withTransaction
+
+        workouts.deleteExercise(exerciseId)
+        val remaining = ordered.filterNot { it.exercise.id == exerciseId }
+        remaining.forEachIndexed { index, item ->
+            if (item.exercise.position != index) workouts.updateExercise(item.exercise.copy(position = index))
         }
+        val current = workout.workout.currentExerciseIndex
+        val next = if (removed < current) current - 1 else current
+        workouts.updateCurrentExercise(workoutId, next.coerceIn(0, remaining.lastIndex.coerceAtLeast(0)))
     }
 
     /** Быстрое добавление нового упражнения в текущую тренировку. */
-    suspend fun addExerciseToWorkout(workoutId: Long, name: String, plannedSets: Int = 3): Long = db.withTransaction {
+    suspend fun addExerciseToWorkout(workoutId: Long, name: String, plannedSets: Int = 1): Long = db.withTransaction {
         val existingIds = workouts.getExerciseIds(workoutId)
         val position = existingIds.size
         workouts.insertExercise(
@@ -236,81 +290,79 @@ class WorkoutRepository(private val db: AppDatabase) {
 
     // ----- рекорды -----
 
-    /**
-     * Сохранение или обновление рекорда:
-     * Если у этого же веса увеличиваются повторения — прошлый рекорд с этим же весом ЗАМЕНЯЕТСЯ на новый!
-     */
-    suspend fun saveOrUpdateRecord(r: RecordEntity): Pair<Boolean, RecordEntity> = db.withTransaction {
-        val existingAll = records.getOnceAll()
-        val sameExerciseRecords = existingAll.filter { it.exerciseName.equals(r.exerciseName, ignoreCase = true) }
-        val sameWeightRecord = sameExerciseRecords.find { Math.abs(it.weight - r.weight) < 0.01 }
+    suspend fun saveOrUpdateRecord(r: RecordEntity): RecordEntity? = db.withTransaction { storeRecord(r) }
 
-        val result: Pair<Boolean, RecordEntity>
-        if (sameWeightRecord != null) {
-            if (r.reps > sameWeightRecord.reps) {
-                val updated = sameWeightRecord.copy(
-                    reps = r.reps,
-                    dateEpochDay = r.dateEpochDay,
-                    comment = r.comment.ifBlank { sameWeightRecord.comment }
-                )
-                records.update(updated)
-                result = Pair(true, updated)
-            } else if (r.id != 0L && r.id == sameWeightRecord.id) {
-                records.update(r)
-                result = Pair(false, r)
-            } else {
-                result = Pair(false, sameWeightRecord)
-            }
-        } else {
-            if (r.id == 0L) {
-                val newId = records.insert(r)
-                result = Pair(true, r.copy(id = newId))
-            } else {
-                records.update(r)
-                result = Pair(false, r)
-            }
-        }
-
-        // Синхронизация рекорда с облаком
-        if (result.first || r.id != 0L) {
-            syncRecordToCloud(result.second)
-        }
-        result
+    suspend fun editRecord(r: RecordEntity): String? = db.withTransaction {
+        val existing = records.getById(r.id) ?: return@withTransaction "Рекорд уже удалён"
+        val others = recordsForExercise(r.exerciseName).filter { it.id != r.id }
+        if (others.any { it.covers(r) }) return@withTransaction BETTER_RECORD_EXISTS
+        replaceRecords(r.copy(isFavorite = existing.isFavorite), others.filter { r.covers(it) })
+        null
     }
 
-    private suspend fun syncRecordToCloud(r: RecordEntity) {
-        val uid = FirebaseAuth.getInstance().uid ?: return
-        try {
-            val firestore = FirebaseFirestore.getInstance()
-            val safeExName = r.exerciseName.trim().lowercase().replace(Regex("[^a-zA-Z0-9_а-яА-Я]"), "_")
-            val weightKey = (r.weight * 100).toLong()
-            val docId = "${uid}_${safeExName}_${weightKey}"
-
-            val data = hashMapOf(
-                "athleteUid" to uid,
-                "exerciseName" to r.exerciseName,
-                "weight" to r.weight,
-                "reps" to r.reps,
-                "dateEpochDay" to r.dateEpochDay,
-                "comment" to r.comment,
-                "isFavorite" to r.isFavorite,
-                "updatedAt" to System.currentTimeMillis()
-            )
-            firestore.collection("records").document(docId).set(data).await()
-        } catch (_: Exception) {}
+    private suspend fun storeRecord(r: RecordEntity, keepImportedDetails: Boolean = false): RecordEntity? {
+        val current = compactExerciseRecords(recordsForExercise(r.exerciseName))
+        val better = current.firstOrNull { it.covers(r) }
+        if (better != null) {
+            if (keepImportedDetails) replaceRecords(better, listOf(r))
+            return null
+        }
+        val surpassed = current.filter { r.covers(it) }
+        val previous = surpassed.firstOrNull { it.weight == r.weight || it.reps == r.reps }
+            ?: surpassed.firstOrNull()
+        return replaceRecords(r.copy(id = previous?.id ?: 0), surpassed)
     }
 
-    suspend fun syncUserDataFromCloud() {
-        val uid = FirebaseAuth.getInstance().uid ?: return
-        try {
-            val firestore = FirebaseFirestore.getInstance()
+    private suspend fun recordsForExercise(exerciseName: String): List<RecordEntity> =
+        records.getOnceAll().filter { it.exerciseName.trim().equals(exerciseName.trim(), ignoreCase = true) }
 
+    private suspend fun replaceRecords(record: RecordEntity, surpassed: List<RecordEntity>): RecordEntity {
+        val extraComments = surpassed.map { it.comment }.filter { it.isNotBlank() && it != record.comment }
+        val updated = record.copy(
+            comment = if (extraComments.isEmpty()) record.comment else (listOf(record.comment) + extraComments)
+                .flatMap { it.split("\n\n") }
+                .filter { it.isNotBlank() }
+                .distinct()
+                .joinToString("\n\n"),
+            isFavorite = record.isFavorite || surpassed.any { it.isFavorite }
+        )
+        if (updated.id == 0L) return updated.copy(id = records.insert(updated))
+        records.update(updated)
+        surpassed.filter { it.id != 0L && it.id != updated.id }.forEach { records.delete(it.id) }
+        return updated
+    }
+
+    internal suspend fun compactSyncedRecords(documentIds: Map<Long, String>) {
+        val byExercise = sortedMapOf<String, MutableList<RecordEntity>>(String.CASE_INSENSITIVE_ORDER)
+        for (record in records.getOnceAll().sortedBy { documentIds[it.id] }) {
+            byExercise.getOrPut(record.exerciseName.trim()) { mutableListOf() }.add(record)
+        }
+        byExercise.values.forEach { compactExerciseRecords(it) }
+    }
+
+    private suspend fun compactExerciseRecords(rows: List<RecordEntity>): List<RecordEntity> {
+        val best = mutableListOf<RecordEntity>()
+        // При обходе от большего веса к меньшему повторы у оставшихся строк возрастают.
+        for (row in rows.sortedWith(compareByDescending<RecordEntity> { it.weight }
+            .thenByDescending { it.reps }.thenBy { it.dateEpochDay })) {
+            val heavier = best.lastOrNull()
+            if (heavier != null && heavier.covers(row)) {
+                best[best.lastIndex] = replaceRecords(heavier, listOf(row))
+            } else {
+                best.add(row)
+            }
+        }
+        return best
+    }
+
+    private fun RecordEntity.covers(other: RecordEntity): Boolean = weight >= other.weight && reps >= other.reps
+
+    internal suspend fun importLegacyDiary(uid: String, firestore: FirebaseFirestore) {
+        run {
             // 1. Загрузка выполненных тренировок из Firebase в локальную базу данных
             val completedSnap = firestore.collection("completed_workouts")
                 .whereEqualTo("athleteUid", uid)
                 .get().await()
-
-            val existingLocalCompleted = workouts.getOnceByStatus(WorkoutStatus.COMPLETED)
 
             for (doc in completedSnap.documents) {
                 val title = doc.getString("title") ?: continue
@@ -320,10 +372,15 @@ class WorkoutRepository(private val db: AppDatabase) {
                 val startedAt = doc.getLong("startedAt")
                 val completedAt = doc.getLong("completedAt") ?: System.currentTimeMillis()
 
-                val alreadyLocal = existingLocalCompleted.any {
-                    it.workout.title == title && it.workout.dateEpochDay == dateEpochDay
-                }
-                if (!alreadyLocal) {
+                db.withTransaction {
+                    if (workouts.findCloudWorkout(doc.id) != null) return@withTransaction
+                    val legacy = workouts.findLegacyWorkouts(
+                        WorkoutStatus.COMPLETED, completedAt, title, dateEpochDay
+                    ).singleOrNull()
+                    if (legacy != null) {
+                        workouts.updateWorkout(legacy.copy(cloudId = doc.id))
+                        return@withTransaction
+                    }
                     val newWorkoutId = workouts.insertWorkout(
                         WorkoutEntity(
                             title = title,
@@ -332,7 +389,8 @@ class WorkoutRepository(private val db: AppDatabase) {
                             description = description,
                             status = WorkoutStatus.COMPLETED,
                             startedAt = startedAt,
-                            completedAt = completedAt
+                            completedAt = completedAt,
+                            cloudId = doc.id
                         )
                     )
                     @Suppress("UNCHECKED_CAST")
@@ -365,7 +423,9 @@ class WorkoutRepository(private val db: AppDatabase) {
                                     setNumber = setNum,
                                     reps = reps,
                                     weight = weight,
-                                    isTimeBased = isTimeBased
+                                    isTimeBased = isTimeBased,
+                                    isWarmup = setMap["isWarmup"] as? Boolean ?: false,
+                                    completedAt = (setMap["completedAt"] as? Number)?.toLong() ?: completedAt
                                 )
                             )
                         }
@@ -373,12 +433,10 @@ class WorkoutRepository(private val db: AppDatabase) {
                 }
             }
 
-            // 2. Загрузка рекордов из Firebase в локальную базу данных
+            // Старые версии публиковали рекорды здесь. Новые записи синхронизирует DiarySync.
             val recordsSnap = firestore.collection("records")
                 .whereEqualTo("athleteUid", uid)
                 .get().await()
-
-            val existingLocalRecords = records.getOnceAll()
 
             for (doc in recordsSnap.documents) {
                 val exName = doc.getString("exerciseName") ?: continue
@@ -388,12 +446,8 @@ class WorkoutRepository(private val db: AppDatabase) {
                 val comment = doc.getString("comment") ?: ""
                 val isFavorite = doc.getBoolean("isFavorite") ?: false
 
-                val sameExRecord = existingLocalRecords.find {
-                    it.exerciseName.equals(exName, ignoreCase = true) && Math.abs(it.weight - weight) < 0.01
-                }
-
-                if (sameExRecord == null) {
-                    records.insert(
+                db.withTransaction {
+                    storeRecord(
                         RecordEntity(
                             exerciseName = exName,
                             weight = weight,
@@ -401,36 +455,24 @@ class WorkoutRepository(private val db: AppDatabase) {
                             dateEpochDay = dateEpochDay,
                             comment = comment,
                             isFavorite = isFavorite
-                        )
-                    )
-                } else if (reps > sameExRecord.reps) {
-                    records.update(
-                        sameExRecord.copy(
-                            reps = reps,
-                            dateEpochDay = dateEpochDay,
-                            comment = comment.ifBlank { sameExRecord.comment },
-                            isFavorite = isFavorite
-                        )
+                        ),
+                        keepImportedDetails = true
                     )
                 }
             }
-        } catch (_: Exception) {}
-    }
-
-    suspend fun saveRecord(r: RecordEntity) {
-        saveOrUpdateRecord(r)
+        }
     }
 
     suspend fun deleteRecord(id: Long) = records.delete(id)
 
-    suspend fun toggleRecordFavorite(record: RecordEntity) {
-        records.update(record.copy(isFavorite = !record.isFavorite))
-    }
+    suspend fun toggleRecordFavorite(record: RecordEntity) = records.toggleFavorite(record.id)
 
 
     // ----- настройки -----
 
     suspend fun updateSettings(change: (SettingsEntity) -> SettingsEntity) {
-        settingsDao.save(change(settingsDao.getOnce() ?: SettingsEntity()))
+        db.withTransaction {
+            settingsDao.save(change(settingsDao.getOnce() ?: SettingsEntity()))
+        }
     }
 }

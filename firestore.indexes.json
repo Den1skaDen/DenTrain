@@ -1,0 +1,79 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "assigned_workouts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "athleteUid", "order": "ASCENDING" },
+        { "fieldPath": "title", "order": "ASCENDING" },
+        { "fieldPath": "dateEpochDay", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "trainer_requests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "athleteUid", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "trainer_requests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "athleteUid", "order": "ASCENDING" },
+        { "fieldPath": "trainerUid", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "trainer_requests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "trainerUid", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "notifications",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "recipientUid", "order": "ASCENDING" },
+        { "fieldPath": "timestamp", "order": "DESCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": [
+    {
+      "collectionGroup": "trainer_requests",
+      "fieldPath": "expiresAt",
+      "ttl": true,
+      "indexes": []
+    },
+    {
+      "collectionGroup": "notifications",
+      "fieldPath": "expiresAt",
+      "ttl": true,
+      "indexes": []
+    },
+    {
+      "collectionGroup": "diary",
+      "fieldPath": "payload",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "profiles",
+      "fieldPath": "avatarBase64",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "completed_workouts",
+      "fieldPath": "exercises",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "assigned_workouts",
+      "fieldPath": "exercises",
+      "indexes": []
+    }
+  ]
+}

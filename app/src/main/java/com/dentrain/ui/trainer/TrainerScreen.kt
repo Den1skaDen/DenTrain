@@ -1,5 +1,12 @@
 package com.dentrain.ui.trainer
 
+import com.dentrain.ui.components.DiscardChangesDialog
+import androidx.activity.compose.BackHandler
+import com.dentrain.ui.components.ConfirmDialog
+import com.dentrain.util.userMessage
+import androidx.compose.animation.animateContentSize
+import com.dentrain.ui.components.EditorTextField
+import com.dentrain.ui.theme.DenTrainPalette
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -27,7 +34,6 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.People
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -39,11 +45,9 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TextField
-import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -62,6 +66,10 @@ import com.dentrain.data.AssignedExerciseModel
 import com.dentrain.data.AssignedWorkoutModel
 import com.dentrain.data.ClubModel
 import com.dentrain.data.TrainerRequestModel
+import com.dentrain.data.TrainerRequests
+import com.dentrain.data.WorkoutDelivery
+import com.dentrain.data.activeTrainerRequest
+import com.google.firebase.firestore.ListenerRegistration
 import com.dentrain.ui.admin.UserListItem
 import com.dentrain.ui.components.AssignWorkoutPanel
 import com.dentrain.ui.components.AssignedWorkoutDetailPanel
@@ -75,7 +83,7 @@ import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 
-class TrainerViewModel : ViewModel() {
+class TrainerViewModel(private val delivery: WorkoutDelivery) : ViewModel() {
     private val auth = FirebaseAuth.getInstance()
     private val db = FirebaseFirestore.getInstance()
 
@@ -85,6 +93,9 @@ class TrainerViewModel : ViewModel() {
 
     var clubs by mutableStateOf<List<ClubModel>>(emptyList())
     var requests by mutableStateOf<List<TrainerRequestModel>>(emptyList())
+    var requestProfiles by mutableStateOf<Map<String, AdminUserModel>>(emptyMap())
+        private set
+    private val loadingRequestProfiles = mutableSetOf<String>()
     var students by mutableStateOf<List<AdminUserModel>>(emptyList())
     var allUsers by mutableStateOf<List<AdminUserModel>>(emptyList())
 
@@ -95,83 +106,29 @@ class TrainerViewModel : ViewModel() {
     var userWorkouts by mutableStateOf<List<AssignedWorkoutModel>>(emptyList())
     var isLoadingWorkouts by mutableStateOf(false)
 
+    private var requestsListener: ListenerRegistration? = null
+    private var studentsListener: ListenerRegistration? = null
+    private var clubMembersListener: ListenerRegistration? = null
+    private var adminAccess = false
+    var decidingRequestIds by mutableStateOf(emptySet<String>())
+        private set
+    private var isQueuingWorkout = false
+
     init {
+        listenToRoster()
         loadTrainerData()
     }
 
     fun loadUserWorkouts(userUid: String) {
+        val trainerUid = auth.uid ?: return
+        if (students.none { it.uid == userUid }) return
         isLoadingWorkouts = true
+        userWorkouts = emptyList()
         viewModelScope.launch {
             try {
-                val assignedSnap = db.collection("assigned_workouts")
-                    .whereEqualTo("athleteUid", userUid)
-                    .get().await()
-                val assignedList = assignedSnap.documents.map { doc ->
-                    val status = doc.getString("status") ?: "pending"
-                    val exList = (doc.get("exercises") as? List<Map<String, Any>>)?.map { ex ->
-                        AssignedExerciseModel(
-                            name = ex["name"] as? String ?: "",
-                            plannedSets = (ex["plannedSets"] as? Long)?.toInt() ?: 3,
-                            plannedReps = ex["plannedReps"] as? String ?: "10",
-                            plannedWeight = (ex["plannedWeight"] as? Number)?.toDouble()
-                        )
-                    } ?: emptyList()
-
-                    AssignedWorkoutModel(
-                        id = doc.id,
-                        trainerUid = doc.getString("trainerUid") ?: "",
-                        trainerName = doc.getString("trainerName") ?: "",
-                        athleteUid = doc.getString("athleteUid") ?: "",
-                        title = doc.getString("title") ?: "",
-                        dateEpochDay = doc.getLong("dateEpochDay") ?: 0,
-                        description = doc.getString("description") ?: "",
-                        exercises = exList,
-                        createdAt = doc.getLong("createdAt") ?: 0,
-                        isCompleted = status == "completed"
-                    )
-                }
-
-                val completedSnap = db.collection("completed_workouts")
-                    .whereEqualTo("athleteUid", userUid)
-                    .get().await()
-                val completedList = completedSnap.documents.map { doc ->
-                    val exList = (doc.get("exercises") as? List<Map<String, Any>>)?.map { ex ->
-                        val setsList = (ex["sets"] as? List<Map<String, Any>>) ?: emptyList()
-                        AssignedExerciseModel(
-                            name = ex["name"] as? String ?: "",
-                            plannedSets = (ex["plannedSets"] as? Long)?.toInt() ?: (if (setsList.isNotEmpty()) setsList.size else 3),
-                            plannedReps = ex["plannedReps"] as? String ?: "10",
-                            plannedWeight = (ex["plannedWeight"] as? Number)?.toDouble()
-                        )
-                    } ?: emptyList()
-
-                    AssignedWorkoutModel(
-                        id = doc.id,
-                        trainerUid = "",
-                        trainerName = "",
-                        athleteUid = doc.getString("athleteUid") ?: userUid,
-                        title = doc.getString("title") ?: "",
-                        dateEpochDay = doc.getLong("dateEpochDay") ?: 0,
-                        description = doc.getString("description") ?: "",
-                        exercises = exList,
-                        createdAt = doc.getLong("createdAt") ?: 0,
-                        isCompleted = true
-                    )
-                }
-
-                val allList = mutableListOf<AssignedWorkoutModel>()
-                allList.addAll(completedList)
-                assignedList.forEach { assigned ->
-                    val existsInCompleted = completedList.any {
-                        it.title == assigned.title && it.dateEpochDay == assigned.dateEpochDay
-                    }
-                    if (!existsInCompleted) {
-                        allList.add(assigned)
-                    }
-                }
-
-                userWorkouts = allList.sortedByDescending { it.dateEpochDay }
+                userWorkouts = WorkoutDelivery.loadAssignments(db, userUid, trainerUid)
             } catch (e: Exception) {
+                error = e.userMessage("Не удалось загрузить тренировки ученика.")
                 userWorkouts = emptyList()
             } finally {
                 isLoadingWorkouts = false
@@ -185,9 +142,10 @@ class TrainerViewModel : ViewModel() {
         error = null
         viewModelScope.launch {
             try {
-                val userDoc = db.collection("users").document(uid).get().await()
+                val userDoc = db.collection("profiles").document(uid).get().await()
                 if (userDoc.exists()) {
                     trainerNickname = userDoc.getString("nickname") ?: userDoc.getString("email") ?: "Тренер"
+                    adminAccess = userDoc.getString("role") == "admin"
                     selectedClubId = userDoc.getString("clubId")
                     selectedClubName = userDoc.getString("clubName")
                 }
@@ -199,66 +157,17 @@ class TrainerViewModel : ViewModel() {
                         name = doc.getString("name") ?: "",
                         address = doc.getString("address") ?: "",
                         phone = doc.getString("phone") ?: "",
-                        description = doc.getString("description") ?: ""
+                        description = doc.getString("description").orEmpty(),
+                        ownerUid = doc.getString("ownerUid").orEmpty()
                     )
                 }
 
-                val requestsSnapshot = db.collection("trainer_requests")
-                    .whereEqualTo("trainerUid", uid)
-                    .get().await()
-                requests = requestsSnapshot.documents.mapNotNull { doc ->
-                    val status = doc.getString("status") ?: "pending"
-                    if (status == "pending") {
-                        TrainerRequestModel(
-                            id = doc.id,
-                            trainerUid = doc.getString("trainerUid") ?: "",
-                            trainerName = doc.getString("trainerName") ?: "",
-                            athleteUid = doc.getString("athleteUid") ?: "",
-                            athleteName = doc.getString("athleteName") ?: "",
-                            athleteEmail = doc.getString("athleteEmail") ?: "",
-                            status = status,
-                            timestamp = doc.getLong("timestamp") ?: System.currentTimeMillis()
-                        )
-                    } else null
-                }
-
-                val allUsersSnapshot = db.collection("users").get().await()
-                allUsers = allUsersSnapshot.documents.map { doc ->
-                    AdminUserModel(
-                        uid = doc.id,
-                        email = doc.getString("email") ?: "",
-                        nickname = doc.getString("nickname") ?: "",
-                        username = doc.getString("username") ?: "",
-                        avatarBase64 = doc.getString("avatarBase64") ?: "",
-                        role = doc.getString("role") ?: "athlete",
-                        dobEpochDay = doc.getLong("dobEpochDay"),
-                        clubId = doc.getString("clubId"),
-                        clubName = doc.getString("clubName"),
-                        trainerUid = doc.getString("trainerUid"),
-                        trainerName = doc.getString("trainerName")
-                    )
-                }
-
-                val studentsSnapshot = db.collection("users")
-                    .whereEqualTo("trainerUid", uid)
-                    .get().await()
-                students = studentsSnapshot.documents.map { doc ->
-                    AdminUserModel(
-                        uid = doc.id,
-                        email = doc.getString("email") ?: "",
-                        nickname = doc.getString("nickname") ?: "",
-                        username = doc.getString("username") ?: "",
-                        avatarBase64 = doc.getString("avatarBase64") ?: "",
-                        role = doc.getString("role") ?: "athlete",
-                        dobEpochDay = doc.getLong("dobEpochDay"),
-                        clubId = doc.getString("clubId"),
-                        clubName = doc.getString("clubName"),
-                        trainerUid = doc.getString("trainerUid"),
-                        trainerName = doc.getString("trainerName")
-                    )
+                if (clubs.none { it.id == selectedClubId }) {
+                    selectedClubId = null
+                    selectedClubName = null
                 }
             } catch (e: Exception) {
-                error = "Ошибка загрузки данных тренера: ${e.localizedMessage}"
+                error = e.userMessage("Ошибка загрузки данных тренера.")
             } finally {
                 isLoading = false
             }
@@ -266,20 +175,31 @@ class TrainerViewModel : ViewModel() {
     }
 
     fun saveClub(club: ClubModel, onDone: () -> Unit) {
+        val uid = auth.uid ?: return
         viewModelScope.launch {
             try {
                 val docRef = if (club.id.isBlank()) db.collection("clubs").document() else db.collection("clubs").document(club.id)
-                val data = hashMapOf(
+                val data = hashMapOf<String, Any>(
                     "name" to club.name.trim(),
                     "address" to club.address.trim(),
                     "phone" to club.phone.trim(),
                     "description" to club.description.trim()
                 )
-                docRef.set(data).await()
+                if (club.id.isBlank()) {
+                    data["ownerUid"] = uid
+                    val batch = db.batch()
+                    batch.set(docRef, data)
+                    batch.update(db.collection("profiles").document(uid), mapOf(
+                        "clubId" to docRef.id, "clubName" to data.getValue("name")
+                    ))
+                    batch.commit().await()
+                } else {
+                    docRef.update(data).await()
+                }
                 loadTrainerData()
                 onDone()
             } catch (e: Exception) {
-                error = "Ошибка при сохранении клуба: ${e.localizedMessage}"
+                error = e.userMessage("Ошибка при сохранении клуба.")
             }
         }
     }
@@ -288,7 +208,7 @@ class TrainerViewModel : ViewModel() {
         val uid = auth.uid ?: return
         viewModelScope.launch {
             try {
-                db.collection("users").document(uid).update(
+                db.collection("profiles").document(uid).update(
                     mapOf(
                         "clubId" to null,
                         "clubName" to null
@@ -299,7 +219,7 @@ class TrainerViewModel : ViewModel() {
                 successMsg = "Вы покинули клуб"
                 loadTrainerData()
             } catch (e: Exception) {
-                error = "Ошибка выхода из клуба: ${e.localizedMessage}"
+                error = e.userMessage("Ошибка выхода из клуба.")
             }
         }
     }
@@ -308,7 +228,7 @@ class TrainerViewModel : ViewModel() {
         val uid = auth.uid ?: return
         viewModelScope.launch {
             try {
-                db.collection("users").document(uid).update(
+                db.collection("profiles").document(uid).update(
                     mapOf(
                         "clubId" to club.id,
                         "clubName" to club.name
@@ -319,76 +239,100 @@ class TrainerViewModel : ViewModel() {
                 successMsg = "Вы вступили в клуб ${club.name}"
                 loadTrainerData()
             } catch (e: Exception) {
-                error = "Ошибка выбора клуба: ${e.localizedMessage}"
+                error = e.userMessage("Ошибка выбора клуба.")
             }
         }
     }
 
-    fun acceptRequest(req: TrainerRequestModel) {
+    private fun listenToRoster() {
         val uid = auth.uid ?: return
+        requestsListener = db.collection("trainer_requests")
+            .whereEqualTo("trainerUid", uid).whereEqualTo("status", "pending")
+            .addSnapshotListener { snapshot, failure ->
+                if (failure != null) error = "Не удалось обновить заявки."
+                if (snapshot != null) requests = snapshot.documents.mapNotNull { it.activeTrainerRequest() }
+                    .sortedByDescending { it.timestamp }
+            }
+        studentsListener = db.collection("profiles").whereEqualTo("trainerUid", uid)
+            .addSnapshotListener { snapshot, failure ->
+                if (failure != null) error = "Не удалось обновить список учеников."
+                if (snapshot != null) students = snapshot.documents.map { it.rosterUser() }
+                    .filter { it.role == "athlete" }.sortedBy { it.nickname.lowercase() }
+            }
+    }
+
+    fun loadRequestProfile(athleteUid: String) {
+        if (athleteUid in requestProfiles || !loadingRequestProfiles.add(athleteUid)) return
         viewModelScope.launch {
             try {
-                val allAthleteReqs = db.collection("trainer_requests")
-                    .whereEqualTo("athleteUid", req.athleteUid)
-                    .whereEqualTo("trainerUid", uid)
-                    .get().await()
-                
-                for (doc in allAthleteReqs.documents) {
-                    db.collection("trainer_requests").document(doc.id).delete().await()
-                }
-
-                db.collection("users").document(req.athleteUid).update(
-                    mapOf(
-                        "trainerUid" to uid,
-                        "trainerName" to trainerNickname
-                    )
-                ).await()
-                
-                val notif = hashMapOf(
-                    "recipientUid" to req.athleteUid,
-                    "title" to "Заявка принята",
-                    "message" to "Тренер $trainerNickname принял вашу заявку.",
-                    "timestamp" to System.currentTimeMillis(),
-                    "isRead" to false,
-                    "type" to "success"
-                )
-                db.collection("notifications").add(notif)
-
-                successMsg = "Ученик ${req.athleteName} принят под ваше руководство!"
-                loadTrainerData()
-            } catch (e: Exception) {
-                error = "Ошибка принятия заявки: ${e.localizedMessage}"
+                val profile = db.collection("profiles").document(athleteUid).get().await()
+                if (profile.exists()) requestProfiles = requestProfiles + (athleteUid to profile.rosterUser())
+            } catch (failure: Exception) {
+                error = failure.userMessage("Не удалось загрузить профиль спортсмена.")
+            } finally {
+                loadingRequestProfiles.remove(athleteUid)
             }
         }
     }
 
-    fun rejectRequest(req: TrainerRequestModel) {
-        val uid = auth.uid ?: return
+    private fun com.google.firebase.firestore.DocumentSnapshot.rosterUser() = AdminUserModel(
+        uid = id,
+        nickname = getString("nickname").orEmpty(),
+        username = getString("username").orEmpty(),
+        avatarBase64 = getString("avatarBase64").orEmpty(),
+        role = getString("role") ?: "athlete",
+        dobEpochDay = getLong("dobEpochDay"),
+        clubId = getString("clubId"),
+        clubName = getString("clubName"),
+        trainerUid = getString("trainerUid"),
+        trainerName = getString("trainerName")
+    )
+
+    fun observeClubMembers(clubId: String) {
+        stopObservingClubMembers()
+        clubMembersListener = db.collection("profiles").whereEqualTo("clubId", clubId)
+            .addSnapshotListener { snapshot, failure ->
+                if (failure != null) error = "Не удалось обновить состав клуба."
+                if (snapshot != null) allUsers = snapshot.documents.map { it.rosterUser() }
+            }
+    }
+
+    fun stopObservingClubMembers() {
+        clubMembersListener?.remove()
+        clubMembersListener = null
+        allUsers = emptyList()
+    }
+
+    fun detachStudent(student: AdminUserModel) {
         viewModelScope.launch {
             try {
-                val allAthleteReqs = db.collection("trainer_requests")
-                    .whereEqualTo("athleteUid", req.athleteUid)
-                    .whereEqualTo("trainerUid", uid)
-                    .get().await()
-                
-                for (doc in allAthleteReqs.documents) {
-                    db.collection("trainer_requests").document(doc.id).delete().await()
-                }
-                
-                val notif = hashMapOf(
-                    "recipientUid" to req.athleteUid,
-                    "title" to "Заявка отклонена",
-                    "message" to "Тренер $trainerNickname отклонил вашу заявку.",
-                    "timestamp" to System.currentTimeMillis(),
-                    "isRead" to false,
-                    "type" to "warning"
-                )
-                db.collection("notifications").add(notif)
-                
-                successMsg = "Заявка отклонена"
-                loadTrainerData()
+                db.collection("profiles").document(student.uid)
+                    .update(mapOf("trainerUid" to null, "trainerName" to null)).await()
+                successMsg = "Ученик ${student.nickname} откреплён"
             } catch (e: Exception) {
-                error = "Ошибка отклонения заявки: ${e.localizedMessage}"
+                error = e.userMessage("Не удалось открепить ученика.")
+            }
+        }
+    }
+
+    override fun onCleared() {
+        requestsListener?.remove()
+        studentsListener?.remove()
+        clubMembersListener?.remove()
+    }
+
+    fun decideRequest(req: TrainerRequestModel, accepted: Boolean) {
+        if (req.id in decidingRequestIds) return
+        decidingRequestIds = decidingRequestIds + req.id
+        error = null
+        viewModelScope.launch {
+            try {
+                TrainerRequests(db).decide(req, accepted)
+                successMsg = if (accepted) "Ученик ${req.athleteName} добавлен" else "Заявка отклонена"
+            } catch (e: Exception) {
+                error = e.userMessage("Не удалось обработать заявку.")
+            } finally {
+                decidingRequestIds = decidingRequestIds - req.id
             }
         }
     }
@@ -402,36 +346,29 @@ class TrainerViewModel : ViewModel() {
         onDone: () -> Unit
     ) {
         val uid = auth.uid ?: return
-        if (title.isBlank()) {
-            error = "Введите название тренировки"
-            return
-        }
+        if (isQueuingWorkout) return
+        isQueuingWorkout = true
+        error = null
         viewModelScope.launch {
             try {
-                val docRef = db.collection("assigned_workouts").document()
-                val exercisesMap = exercises.map { ex ->
-                    mapOf(
-                        "name" to ex.name,
-                        "plannedSets" to ex.plannedSets,
-                        "plannedReps" to ex.plannedReps,
-                        "plannedWeight" to ex.plannedWeight
-                    )
-                }
-                val data = hashMapOf(
-                    "trainerUid" to uid,
-                    "trainerName" to trainerNickname,
-                    "athleteUid" to studentUid,
-                    "title" to title.trim(),
-                    "dateEpochDay" to dateEpochDay,
-                    "description" to description.trim(),
-                    "exercises" to exercisesMap,
-                    "createdAt" to System.currentTimeMillis()
+                val sending = delivery.enqueue(
+                    uid, trainerNickname, studentUid, title, dateEpochDay, description, exercises, admin = adminAccess
                 )
-                docRef.set(data).await()
-                successMsg = "Тренировка «$title» успешно назначена ученику!"
+                successMsg = "Тренировка в очереди. Подтверждение появится в уведомлениях после получения."
                 onDone()
+                sending.addOnSuccessListener {
+                    successMsg = "Тренировка отправлена. Ожидаем получения учеником."
+                    loadUserWorkouts(studentUid)
+                }.addOnFailureListener { failure ->
+                    successMsg = null
+                    error = failure.userMessage("Не удалось отправить тренировку «$title».")
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
-                error = "Ошибка назначения тренировки: ${e.localizedMessage}"
+                error = e.userMessage("Не удалось поставить тренировку в очередь.")
+            } finally {
+                isQueuingWorkout = false
             }
         }
     }
@@ -446,12 +383,34 @@ fun TrainerClubDetailsPanel(
     onLeaveClubRequest: () -> Unit
 ) {
     var isEditing by remember(club.id) { mutableStateOf(false) }
+    DisposableEffect(club.id) {
+        vm.observeClubMembers(club.id)
+        onDispose { vm.stopObservingClubMembers() }
+    }
     var name by remember(club.id, club.name) { mutableStateOf(club.name) }
     var address by remember(club.id, club.address) { mutableStateOf(club.address) }
     var phone by remember(club.id, club.phone) { mutableStateOf(club.phone) }
     var description by remember(club.id, club.description) { mutableStateOf(club.description) }
 
-    val clubTrainers = remember(vm.allUsers, club.id) { vm.allUsers.filter { it.clubId == club.id && it.role == "trainer" } }
+    val editedClub = club.copy(name = name, address = address, phone = phone, description = description)
+    var savedClub by remember(club) { mutableStateOf(club) }
+    var showDiscard by remember { mutableStateOf(false) }
+    val handleBack = {
+        if (isEditing && editedClub != savedClub) {
+            showDiscard = true
+        } else {
+            onBack()
+        }
+    }
+    BackHandler(onBack = handleBack)
+    if (showDiscard) {
+        DiscardChangesDialog(
+            onDiscard = { showDiscard = false; onBack() },
+            onDismiss = { showDiscard = false }
+        )
+    }
+
+    val clubTrainers = remember(vm.allUsers, club.id) { vm.allUsers.filter { it.clubId == club.id && it.role in setOf("trainer", "admin") } }
     val clubAthletes = remember(vm.allUsers, club.id) { vm.allUsers.filter { it.clubId == club.id && it.role == "athlete" } }
 
     Column(
@@ -461,17 +420,18 @@ fun TrainerClubDetailsPanel(
     ) {
         ScreenHeader(
             title = "Подробнее о клубе",
-            onBack = onBack,
+            onBack = handleBack,
             actions = {
                 if (isEditing) {
                     IconButton(onClick = {
-                        vm.saveClub(club.copy(name = name, address = address, phone = phone, description = description)) {
+                        vm.saveClub(editedClub) {
+                            savedClub = editedClub
                             isEditing = false
                         }
                     }) {
                         Icon(Icons.Filled.Check, "Сохранить", tint = Color.White)
                     }
-                } else {
+                } else if (club.ownerUid == FirebaseAuth.getInstance().uid) {
                     IconButton(onClick = { isEditing = true }) {
                         Icon(Icons.Filled.Edit, "Изменить", tint = Color.White)
                     }
@@ -491,74 +451,18 @@ fun TrainerClubDetailsPanel(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(16.dp))
-                    .background(Color(0xFF1C1E26))
-                    .border(1.dp, Color(0xFFFFC107), RoundedCornerShape(16.dp))
+                    .background(if (isEditing) DenTrainPalette.Panel else Color(0xFF1C1E26))
+                    .border(1.dp, if (isEditing) DenTrainPalette.SubtleBorder else Color(0xFFFFC107), RoundedCornerShape(16.dp))
+                    .animateContentSize()
                     .padding(16.dp)
             ) {
                 if (isEditing) {
-                    TextField(
-                        value = name,
-                        onValueChange = { name = it },
-                        label = { Text("Название клуба") },
-                        singleLine = true,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(24.dp)),
-                        colors = TextFieldDefaults.colors(
-                            focusedContainerColor = Color(0xFF222938),
-                            unfocusedContainerColor = Color(0xFF222938),
-                            focusedIndicatorColor = Color.Transparent,
-                            unfocusedIndicatorColor = Color.Transparent,
-                        )
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    TextField(
-                        value = address,
-                        onValueChange = { address = it },
-                        label = { Text("Адрес") },
-                        singleLine = true,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(24.dp)),
-                        colors = TextFieldDefaults.colors(
-                            focusedContainerColor = Color(0xFF222938),
-                            unfocusedContainerColor = Color(0xFF222938),
-                            focusedIndicatorColor = Color.Transparent,
-                            unfocusedIndicatorColor = Color.Transparent,
-                        )
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    TextField(
-                        value = phone,
-                        onValueChange = { phone = it },
-                        label = { Text("Телефон") },
-                        singleLine = true,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(24.dp)),
-                        colors = TextFieldDefaults.colors(
-                            focusedContainerColor = Color(0xFF222938),
-                            unfocusedContainerColor = Color(0xFF222938),
-                            focusedIndicatorColor = Color.Transparent,
-                            unfocusedIndicatorColor = Color.Transparent,
-                        )
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    TextField(
-                        value = description,
-                        onValueChange = { description = it },
-                        label = { Text("Описание") },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(100.dp)
-                            .clip(RoundedCornerShape(24.dp)),
-                        colors = TextFieldDefaults.colors(
-                            focusedContainerColor = Color(0xFF222938),
-                            unfocusedContainerColor = Color(0xFF222938),
-                            focusedIndicatorColor = Color.Transparent,
-                            unfocusedIndicatorColor = Color.Transparent,
-                        )
-                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        EditorTextField(name, { name = it }, "Название клуба")
+                        EditorTextField(address, { address = it }, "Адрес")
+                        EditorTextField(phone, { phone = it }, "Телефон")
+                        EditorTextField(description, { description = it }, "Описание", singleLine = false)
+                    }
                 } else {
                     Text(name.ifBlank { "Без названия" }, fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color.White)
                     Spacer(Modifier.height(4.dp))
@@ -643,9 +547,9 @@ fun TrainerClubDetailsPanel(
 }
 
 @Composable
-fun TrainerScreen(onBack: () -> Unit) {
-    val vm = appViewModel { TrainerViewModel() }
-    var selectedTab by remember { mutableStateOf(0) }
+fun TrainerScreen(onBack: () -> Unit, openRequests: Boolean = false) {
+    val vm = appViewModel { TrainerViewModel(it.workoutDelivery) }
+    var selectedTab by remember { mutableStateOf(if (openRequests) 1 else 0) }
 
     var selectedStudentForWorkout by remember { mutableStateOf<AdminUserModel?>(null) }
     var viewingUserAccount by remember { mutableStateOf<AdminUserModel?>(null) }
@@ -654,6 +558,7 @@ fun TrainerScreen(onBack: () -> Unit) {
 
     var viewingClub by remember { mutableStateOf<ClubModel?>(null) }
     var showLeaveClubConfirm by remember { mutableStateOf(false) }
+    var requestDecision by remember { mutableStateOf<Pair<TrainerRequestModel, Boolean>?>(null) }
 
     Box(Modifier.fillMaxSize().background(Color(0xFF0F1115))) {
         Column(
@@ -661,16 +566,20 @@ fun TrainerScreen(onBack: () -> Unit) {
                 .fillMaxSize()
                 .statusBarsPadding()
         ) {
-            if (viewingWorkoutDetail != null && viewingUserAccount != null) {
+            ErrorText(vm.error, Modifier.padding(horizontal = 16.dp))
+            vm.successMsg?.let { Text(it, Modifier.padding(horizontal = 16.dp, vertical = 4.dp), color = DenTrainPalette.Lime) }
+            if (viewingWorkoutDetail != null && vm.students.any { it.uid == viewingUserAccount?.uid }) {
                 AssignedWorkoutDetailPanel(
                     workout = viewingWorkoutDetail!!,
                     user = viewingUserAccount!!,
                     onBack = { viewingWorkoutDetail = null },
-                    onReassign = {
-                        workoutToReassign = viewingWorkoutDetail
-                        viewingWorkoutDetail = null
-                        selectedStudentForWorkout = viewingUserAccount
-                    }
+                    onReassign = if (vm.students.any { it.uid == viewingUserAccount?.uid }) {
+                        {
+                            workoutToReassign = viewingWorkoutDetail
+                            viewingWorkoutDetail = null
+                            selectedStudentForWorkout = viewingUserAccount
+                        }
+                    } else null
                 )
             } else if (selectedStudentForWorkout != null) {
                 val student = selectedStudentForWorkout!!
@@ -691,29 +600,36 @@ fun TrainerScreen(onBack: () -> Unit) {
                     initialExercises = workoutToReassign?.exercises ?: emptyList()
                 )
             } else if (viewingUserAccount != null) {
-                val user = viewingUserAccount!!
+                val selectedUser = viewingUserAccount!!
+                val user = vm.requestProfiles[selectedUser.uid] ?: selectedUser
                 val currentUserId = FirebaseAuth.getInstance().uid
-                LaunchedEffect(user.uid) {
-                    vm.loadUserWorkouts(user.uid)
+                val isStudent = vm.students.any { it.uid == user.uid }
+                LaunchedEffect(user.uid, isStudent) {
+                    viewingWorkoutDetail = null
+                    if (isStudent) vm.loadUserWorkouts(user.uid)
                 }
-                UserProfilePanel(
-                    user = user,
-                    onBack = { viewingUserAccount = null },
-                    onAssignWorkout = {
+                val assign: (() -> Unit)? = if (isStudent) {
+                    {
                         workoutToReassign = null
                         selectedStudentForWorkout = user
-                    },
+                    }
+                } else null
+                UserProfilePanel(
+                    user = user.copy(trainerUid = currentUserId.takeIf { isStudent }),
+                    onBack = { viewingUserAccount = null },
+                    onAssignWorkout = assign,
                     onWorkoutClick = { workout ->
                         viewingWorkoutDetail = workout
                     },
                     currentUserId = currentUserId,
                     viewerRole = "trainer",
-                    userWorkouts = vm.userWorkouts,
+                    onDetachStudent = if (isStudent) ({ vm.detachStudent(user) }) else null,
+                    userWorkouts = vm.userWorkouts.takeIf { isStudent }.orEmpty(),
                     isLoadingWorkouts = vm.isLoadingWorkouts
                 )
             } else if (viewingClub != null) {
                 TrainerClubDetailsPanel(
-                    club = viewingClub!!,
+                    club = vm.clubs.find { it.id == viewingClub!!.id } ?: viewingClub!!,
                     vm = vm,
                     onBack = { viewingClub = null },
                     onUserClick = { viewingUserAccount = it },
@@ -754,16 +670,6 @@ fun TrainerScreen(onBack: () -> Unit) {
                 if (vm.isLoading) {
                     Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator() }
                 } else {
-                    ErrorText(vm.error, Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
-                    if (vm.successMsg != null) {
-                        Text(
-                            vm.successMsg!!,
-                            color = MaterialTheme.colorScheme.primary,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
-                        )
-                    }
-
                     when (selectedTab) {
                         0 -> {
                             // ВКЛАДКА: МОЙ КЛУБ
@@ -788,7 +694,7 @@ fun TrainerScreen(onBack: () -> Unit) {
                                             SectionTitle("Мой клуб")
                                             Spacer(Modifier.height(8.dp))
                                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                                Icon(Icons.Filled.Business, null, tint = Color(0xFFA6FF00), modifier = Modifier.size(32.dp))
+                                                Icon(Icons.Filled.Business, null, tint = DenTrainPalette.Lime, modifier = Modifier.size(32.dp))
                                                 Spacer(Modifier.width(16.dp))
                                                 Column(Modifier.weight(1f)) {
                                                     Text(myClub.name, fontWeight = FontWeight.Bold, color = Color.White, fontSize = 16.sp)
@@ -863,15 +769,12 @@ fun TrainerScreen(onBack: () -> Unit) {
                                 } else {
                                     LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                         items(vm.requests, key = { it.id }) { req ->
-                                            val athleteUser = remember(vm.allUsers, req.athleteUid) {
-                                                vm.allUsers.find { it.uid == req.athleteUid }
-                                                    ?: AdminUserModel(
-                                                        uid = req.athleteUid,
-                                                        email = req.athleteEmail,
-                                                        nickname = req.athleteName,
-                                                        role = "athlete"
-                                                    )
+                                            LaunchedEffect(req.athleteUid) {
+                                                vm.loadRequestProfile(req.athleteUid)
                                             }
+                                            val athleteUser = vm.requestProfiles[req.athleteUid]
+                                                ?: vm.allUsers.find { it.uid == req.athleteUid }
+                                                ?: AdminUserModel(uid = req.athleteUid, nickname = req.athleteName)
                                             Box(
                                                 modifier = Modifier
                                                     .fillMaxWidth()
@@ -883,15 +786,19 @@ fun TrainerScreen(onBack: () -> Unit) {
                                                     UserListItem(
                                                         user = athleteUser,
                                                         renderAsCard = false,
-                                                        onItemClick = { viewingUserAccount = athleteUser }
+                                                        onItemClick = {
+                                                            vm.loadRequestProfile(req.athleteUid)
+                                                            viewingUserAccount = athleteUser
+                                                        }
                                                     )
 
                                                     Spacer(Modifier.height(16.dp))
 
                                                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                                         Button(
-                                                            onClick = { vm.acceptRequest(req) },
-                                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFA6FF00), contentColor = Color.Black),
+                                                            onClick = { requestDecision = req to true },
+                                                            enabled = req.id !in vm.decidingRequestIds,
+                                                            colors = ButtonDefaults.buttonColors(containerColor = DenTrainPalette.Lime, contentColor = Color.Black),
                                                             modifier = Modifier.weight(1f)
                                                         ) {
                                                             Icon(Icons.Filled.Check, null)
@@ -899,7 +806,8 @@ fun TrainerScreen(onBack: () -> Unit) {
                                                             Text("Принять", fontWeight = FontWeight.Bold)
                                                         }
                                                         OutlinedButton(
-                                                            onClick = { vm.rejectRequest(req) },
+                                                            onClick = { requestDecision = req to false },
+                                                            enabled = req.id !in vm.decidingRequestIds,
                                                             modifier = Modifier.weight(1f)
                                                         ) {
                                                             Icon(Icons.Filled.Close, null, tint = MaterialTheme.colorScheme.error)
@@ -923,7 +831,7 @@ fun TrainerScreen(onBack: () -> Unit) {
                                         Text("У вас пока нет принятых учеников", color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     }
                                 } else {
-                                    LazyColumn(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                                    LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                                         val currentUserId = FirebaseAuth.getInstance().uid
                                         items(vm.students, key = { it.uid }) { student ->
                                             UserListItem(
@@ -943,23 +851,33 @@ fun TrainerScreen(onBack: () -> Unit) {
         }
     }
 
-    if (showLeaveClubConfirm) {
-        AlertDialog(
-            onDismissRequest = { showLeaveClubConfirm = false },
-            title = { Text("Покинуть клуб?") },
-            text = { Text("Вы уверены, что хотите покинуть свой текущий клуб? Вы больше не будете числиться его тренером.") },
-            confirmButton = {
-                TextButton(onClick = {
-                    vm.leaveClub()
-                    showLeaveClubConfirm = false
-                    viewingClub = null
-                }) {
-                    Text("Покинуть", color = MaterialTheme.colorScheme.error)
-                }
+    requestDecision?.let { (request, accepted) ->
+        ConfirmDialog(
+            title = if (accepted) "Принять заявку?" else "Отклонить заявку?",
+            text = if (accepted) "Вы станете тренером спортсмена «${request.athleteName}» и получите доступ к его тренировкам."
+                else "Спортсмен «${request.athleteName}» получит уведомление об отказе.",
+            confirmText = if (accepted) "Принять" else "Отклонить",
+            destructive = !accepted,
+            onConfirm = {
+                requestDecision = null
+                vm.decideRequest(request, accepted)
             },
-            dismissButton = {
-                TextButton(onClick = { showLeaveClubConfirm = false }) { Text("Отмена") }
-            }
+            onDismiss = { requestDecision = null }
         )
     }
+
+    if (showLeaveClubConfirm) {
+        ConfirmDialog(
+            title = "Покинуть клуб?",
+            text = "Вы перестанете числиться тренером этого клуба.",
+            confirmText = "Покинуть",
+            onConfirm = {
+                showLeaveClubConfirm = false
+                vm.leaveClub()
+            },
+            onDismiss = { showLeaveClubConfirm = false }
+        )
+    }
+
+
 }

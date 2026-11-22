@@ -1,5 +1,6 @@
 package com.dentrain.ui.components
 
+import com.dentrain.ui.theme.DenTrainPalette
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -17,6 +18,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -50,12 +53,21 @@ fun SetEditDialog(
 
     val blueAccent = Color(0xFF00B0FF)
 
+    val accent = if (isWarmup) blueAccent else DenTrainPalette.Lime
+    val fieldColors = OutlinedTextFieldDefaults.colors(
+        focusedBorderColor = accent,
+        focusedLabelColor = accent,
+        unfocusedBorderColor = DenTrainPalette.Border,
+        unfocusedLabelColor = DenTrainPalette.MutedText,
+        cursorColor = accent
+    )
+
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(if (isWarmup) "Разминочный подход № ${set.setNumber}" else "Рабочий подход № ${set.setNumber}") },
+        containerColor = DenTrainPalette.Panel,
+        title = { Text("Изменить подход", color = Color.White, fontWeight = FontWeight.Bold) },
         text = {
             Column {
-                // Сине-голубой переключатель типа подхода [ Разминка | Рабочий ]
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -67,26 +79,8 @@ fun SetEditDialog(
                         modifier = Modifier
                             .weight(1f)
                             .clip(CircleShape)
-                            .background(if (isWarmup) blueAccent.copy(alpha = 0.2f) else Color(0xFF242732))
-                            .border(BorderStroke(1.dp, if (isWarmup) blueAccent else Color(0xFF333644)), CircleShape)
-                            .clickable { isWarmup = true }
-                            .padding(vertical = 8.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "Разминка",
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = if (isWarmup) blueAccent else Color(0xFFA0A7B8)
-                        )
-                    }
-
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(CircleShape)
-                            .background(if (!isWarmup) blueAccent.copy(alpha = 0.2f) else Color(0xFF242732))
-                            .border(BorderStroke(1.dp, if (!isWarmup) blueAccent else Color(0xFF333644)), CircleShape)
+                            .background(if (!isWarmup) DenTrainPalette.Lime.copy(alpha = 0.2f) else DenTrainPalette.RaisedPanel)
+                            .border(BorderStroke(1.dp, if (!isWarmup) DenTrainPalette.Lime else DenTrainPalette.Border), CircleShape)
                             .clickable { isWarmup = false }
                             .padding(vertical = 8.dp),
                         contentAlignment = Alignment.Center
@@ -95,7 +89,25 @@ fun SetEditDialog(
                             text = "Рабочий",
                             fontSize = 13.sp,
                             fontWeight = FontWeight.Bold,
-                            color = if (!isWarmup) blueAccent else Color(0xFFA0A7B8)
+                            color = if (!isWarmup) DenTrainPalette.Lime else DenTrainPalette.MutedText
+                        )
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(CircleShape)
+                            .background(if (isWarmup) blueAccent.copy(alpha = 0.2f) else DenTrainPalette.RaisedPanel)
+                            .border(BorderStroke(1.dp, if (isWarmup) blueAccent else DenTrainPalette.Border), CircleShape)
+                            .clickable { isWarmup = true }
+                            .padding(vertical = 8.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "Разминка",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (isWarmup) blueAccent else DenTrainPalette.MutedText
                         )
                     }
                 }
@@ -103,16 +115,20 @@ fun SetEditDialog(
                 Row {
                     OutlinedTextField(
                         value = reps, onValueChange = { reps = it.filter(Char::isDigit).take(4) },
-                        label = { Text("Повт. / Сек.") }, singleLine = true,
+                        label = { Text(if (set.isTimeBased) "Секунды" else "Повторения") }, singleLine = true,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = fieldColors
                     )
                     Spacer(Modifier.width(8.dp))
                     OutlinedTextField(
                         value = weight, onValueChange = { weight = it.filter { c -> c.isDigit() || c == ',' || c == '.' }.take(7) },
                         label = { Text("Вес, кг") }, singleLine = true,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = fieldColors
                     )
                 }
                 Spacer(Modifier.height(8.dp))
@@ -131,8 +147,8 @@ fun SetEditDialog(
                     weight.isNotBlank() && (w == null || w < 0) -> error = "Вес — число не меньше 0"
                     else -> onSave(r, w, isWarmup)
                 }
-            }) { Text("Сохранить") }
+            }) { Text("Сохранить", color = accent) }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } }
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена", color = DenTrainPalette.MutedText) } }
     )
 }
