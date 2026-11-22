@@ -32,10 +32,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.FilterList
-import androidx.compose.material.icons.filled.EmojiEvents
+import com.dentrain.ui.icons.filled.FilterList
+import com.dentrain.ui.icons.filled.EmojiEvents
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.outlined.CalendarToday
+import com.dentrain.ui.icons.outlined.CalendarToday
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.asPaddingValues
