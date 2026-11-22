@@ -1,7 +1,6 @@
 package com.dentrain.util
 
 import com.dentrain.data.SetResultEntity
-import com.dentrain.data.WorkoutEntity
 import com.dentrain.data.ExerciseWithSets
 import com.dentrain.data.WorkoutWithExercises
 import java.math.BigDecimal
@@ -16,20 +15,14 @@ object Fmt {
     val dayShort = listOf("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")
     val monthNames = listOf("янв.", "февр.", "марта", "апр.", "мая", "июня", "июля", "авг.", "сент.", "окт.", "нояб.", "дек.")
 
-    private val longFormat = DateTimeFormatter.ofPattern("d MMMM yyyy 'г.'", Locale.forLanguageTag("ru"))
     private val dateFormat = DateTimeFormatter.ofPattern("d MMMM yyyy", Locale.forLanguageTag("ru"))
     private val shortFormat = DateTimeFormatter.ofPattern("dd.MM.yyyy")
 
     fun dayName(day: Int): String = dayNames[(day - 1).coerceIn(0, 6)]
     fun monthName(month: Int): String = monthNames[(month - 1).coerceIn(0, 11)]
 
-
     fun shortDate(epochDay: Long): String = LocalDate.ofEpochDay(epochDay).format(shortFormat)
     fun displayDate(epochDay: Long): String = LocalDate.ofEpochDay(epochDay).format(dateFormat)
-
-    /** «Понедельник, 19 октября 2026 г.» */
-    fun longDate(w: WorkoutEntity): String =
-        "${dayName(w.dayOfWeek)}, ${LocalDate.ofEpochDay(w.dateEpochDay).format(longFormat)}"
 
     /** 60.0 -> «60», 62.5 -> «62,5». Если веса нет — null. */
     fun weight(value: Double?): String? =
@@ -47,13 +40,6 @@ object Fmt {
             m10 in 2..4 -> few
             else -> many
         }
-    }
-
-    /** «10 повторений, 60 кг» или «60 сек, 10 кг» */
-    fun setLine(s: SetResultEntity): String {
-        val unitText = if (s.isTimeBased) "сек" else plural(s.reps, "повторение", "повторения", "повторений")
-        val countStr = "${s.reps} $unitText"
-        return weight(s.weight)?.let { "$countStr, $it кг" } ?: countStr
     }
 
     /** Компактное представление подхода: «12 х 60 кг» или «15 сек х 20 кг» или «12» */
@@ -95,17 +81,7 @@ object Fmt {
             else -> "$secs сек"
         }
     }
-
-    fun summary(w: WorkoutWithExercises): String {
-        val n = w.exercises.size
-        val sets = w.doneSets()
-        val dur = durationText(w.workout.startedAt, w.workout.completedAt)
-        val durStr = if (dur != null) " · ⏱ $dur" else ""
-        return "$n ${plural(n, "упражнение", "упражнения", "упражнений")} · " +
-            "$sets ${plural(sets, "выполненный подход", "выполненных подхода", "выполненных подходов")}$durStr"
-    }
 }
-
 
 fun WorkoutWithExercises.doneSets(): Int = exercises.sumOf { it.sets.size }
 

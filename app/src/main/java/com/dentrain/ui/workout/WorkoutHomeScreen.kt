@@ -44,9 +44,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.CalendarMonth
-import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FitnessCenter
@@ -54,7 +51,6 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PushPin
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.Timer
@@ -64,14 +60,11 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkHorizontally
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.runtime.rememberCoroutineScope
@@ -80,7 +73,6 @@ import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.SheetState
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -99,8 +91,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.waitForUpOrCancellation
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.ui.input.pointer.pointerInput
@@ -120,7 +110,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
-import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.ViewModel
@@ -136,13 +125,9 @@ import com.dentrain.timer.TimerState
 import com.dentrain.ui.components.ActiveWorkoutCard
 import com.dentrain.ui.components.ConfirmDialog
 import com.dentrain.ui.components.EmptyState
-import com.dentrain.ui.components.GradientButton
-import com.dentrain.ui.components.ScreenHeader
 import com.dentrain.ui.components.SectionTitle
 import com.dentrain.ui.components.WeekCalendarRow
-import com.dentrain.ui.components.ZCard
 import com.dentrain.ui.components.appViewModel
-import com.dentrain.ui.theme.DenTrainTheme
 import com.dentrain.util.Fmt
 import com.dentrain.util.Haptic
 import com.dentrain.ui.components.WorkoutListCount
@@ -151,7 +136,6 @@ import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -173,13 +157,6 @@ import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 import kotlin.math.abs
-
-private data class WeeklyStatsData(
-    val workoutsCount: Int,
-    val setsCount: Int,
-    val tonnageKg: Double,
-    val streakWeeks: Int
-)
 
 data class NotificationModel(
     val id: String = "",
@@ -314,11 +291,6 @@ class WorkoutHomeViewModel(
     }
     fun delete(id: Long) { perform("Не удалось удалить тренировку.") { repo.deleteWorkout(id) } }
     fun unpin(id: Long) { perform("Не удалось открепить тренировку.") { repo.setPinned(id, false) } }
-
-    fun updateScheduledDays(days: Set<Int>) {
-        val str = days.sorted().joinToString(",")
-        perform("Не удалось сохранить расписание.") { repo.updateSettings { it.copy(scheduledDays = str) } }
-    }
 
     fun updateHomeBlocksOrder(order: String) {
         perform("Не удалось сохранить порядок блоков.") { repo.updateSettings { it.copy(homeBlocksOrder = order) } }
@@ -1251,79 +1223,6 @@ private fun PinnedWorkoutCard(
                         }
                     }
                 }
-            }
-        }
-    }
-}
-
-/** Виджет статистики и Стрика тренировок 🔥 */
-@Composable
-private fun WeeklyStatsCard(stats: WeeklyStatsData) {
-    ZCard {
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("🔥", fontSize = 18.sp)
-                Text(
-                    if (stats.streakWeeks > 0) "Стрик: ${stats.streakWeeks} ${Fmt.plural(stats.streakWeeks, "неделя", "недели", "недель")} подряд!"
-                    else "Стрик: начните первую неделю!",
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary
-                )
-            }
-            Text("За 7 дней", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-
-        Spacer(Modifier.height(12.dp))
-
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            StatBox(
-                value = if (stats.tonnageKg >= 1000) "%.1f т".format(stats.tonnageKg / 1000.0).replace('.', ',') else "${stats.tonnageKg.toInt()} кг",
-                label = "Объём веса",
-                modifier = Modifier.weight(1f)
-            )
-            StatBox(
-                value = "${stats.setsCount}",
-                label = "Подходов",
-                modifier = Modifier.weight(1f)
-            )
-            StatBox(
-                value = "${stats.workoutsCount}",
-                label = "Тренировок",
-                modifier = Modifier.weight(1f)
-            )
-        }
-    }
-}
-
-@Composable
-private fun StatBox(value: String, label: String, modifier: Modifier = Modifier) {
-    Column(
-        modifier = modifier.padding(horizontal = 4.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Text(value, fontSize = 20.sp, fontWeight = FontWeight.ExtraBold, color = Color.White)
-        Text(label, fontSize = 11.sp, color = DenTrainPalette.MutedText, textAlign = TextAlign.Center)
-    }
-}
-
-@Preview(showBackground = true)
-@Composable
-fun WorkoutHomeScreenPreview() {
-    DenTrainTheme {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            ScreenHeader("Тренировка", "DenTrain") {}
-            GradientButton("Создать тренировку", {}, Modifier.fillMaxWidth(), icon = Icons.Filled.Add)
-            SectionTitle("Запланированные")
-            ZCard {
-                Text("Силовая тренировка", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-                Text("Грудь, Трицепс", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }

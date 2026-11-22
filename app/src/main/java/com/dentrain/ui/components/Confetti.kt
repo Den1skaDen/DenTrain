@@ -36,12 +36,10 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import com.dentrain.ui.theme.DenTrainTheme
 import kotlin.random.Random
 
 private data class Particle(
@@ -216,90 +214,3 @@ fun RecordCelebrationDialog(
         }
     }
 }
-
-@Preview(showBackground = true)
-@Composable
-fun RecordCelebrationPreview() {
-    DenTrainTheme {
-        Box(
-            modifier = Modifier.fillMaxWidth().padding(16.dp).background(Color.Black.copy(alpha = 0.8f)),
-            contentAlignment = Alignment.Center
-        ) {
-            Card(
-                shape = RoundedCornerShape(28.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                modifier = Modifier.fillMaxWidth().padding(16.dp)
-            ) {
-                Column(
-                    modifier = Modifier.padding(24.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(80.dp)
-                            .clip(CircleShape)
-                            .background(Color(0xFFFFD700).copy(alpha = 0.2f)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            Icons.Filled.EmojiEvents,
-                            contentDescription = "Рекорд",
-                            tint = Color(0xFFFFD700),
-                            modifier = Modifier.size(52.dp)
-                        )
-                    }
-
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(
-                            "RECORD! 🏆",
-                            fontSize = 32.sp,
-                            fontWeight = FontWeight.Black,
-                            letterSpacing = 2.sp,
-                            color = MaterialTheme.colorScheme.primary,
-                            textAlign = TextAlign.Center
-                        )
-                        Text(
-                            "НОВЫЙ ЛИЧНЫЙ РЕКОРД",
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold,
-                            letterSpacing = 1.5.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(16.dp))
-                            .background(MaterialTheme.colorScheme.primaryContainer)
-                            .padding(16.dp)
-                    ) {
-                        Text(
-                            "Жим штанги лежа",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 18.sp,
-                            textAlign = TextAlign.Center
-                        )
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            "100 кг × 10 повторений",
-                            fontWeight = FontWeight.ExtraBold,
-                            fontSize = 22.sp,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                    }
-
-                    GradientButton(
-                        "Ура! Запомнить рекорд",
-                        onClick = {},
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            }
-        }
-    }
-}
-
-

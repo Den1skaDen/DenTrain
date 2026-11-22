@@ -11,7 +11,6 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import com.dentrain.MainActivity
 import com.dentrain.R
-import com.dentrain.WorkoutAlarmActivity
 
 /**
  * Уведомления-напоминания о запланированных тренировках.
@@ -51,29 +50,6 @@ object WorkoutReminderNotifier {
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(true)
             .setContentIntent(pendingIntent)
-            .build()
-
-        NotificationManagerCompat.from(context).notify(NOTIFICATION_ID, notification)
-    }
-
-    @SuppressLint("MissingPermission")
-    fun sendAlarmNotification(context: Context, title: String, message: String) {
-        val alarmIntent = Intent(context, WorkoutAlarmActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-        }
-        val fullScreenPendingIntent = PendingIntent.getActivity(
-            context, 2003, alarmIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle(title)
-            .setContentText(message)
-            .setPriority(NotificationCompat.PRIORITY_MAX)
-            .setCategory(NotificationCompat.CATEGORY_ALARM)
-            .setFullScreenIntent(fullScreenPendingIntent, true)
-            .setAutoCancel(true)
             .build()
 
         NotificationManagerCompat.from(context).notify(NOTIFICATION_ID, notification)

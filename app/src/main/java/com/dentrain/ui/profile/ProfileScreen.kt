@@ -25,7 +25,6 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AdminPanelSettings
@@ -36,8 +35,6 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Sports
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import android.Manifest
@@ -72,7 +69,6 @@ import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -91,7 +87,6 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.ViewModel
@@ -111,7 +106,6 @@ import com.dentrain.ui.components.ScreenHeader
 import com.dentrain.ui.components.SectionTitle
 import com.dentrain.ui.components.AssignedWorkoutDetailPanel
 import com.dentrain.ui.components.UserProfilePanel
-import com.dentrain.ui.components.ZCard
 import com.dentrain.ui.components.appViewModel
 import com.dentrain.ui.components.rememberAvatarBitmap
 import com.dentrain.util.Fmt
@@ -333,24 +327,6 @@ class ProfileViewModel(private val repo: WorkoutRepository? = null) : ViewModel(
         }
     }
 
-    fun joinClubAndRequestTrainer(club: ClubModel, trainer: AdminUserModel?) {
-        if (trainer != null) {
-            sendTrainerRequest(trainer, club)
-            return
-        }
-        val uid = auth.uid ?: return
-        viewModelScope.launch {
-            try {
-                db.collection("profiles").document(uid).update(
-                    mapOf("clubId" to club.id, "clubName" to club.name)
-                ).await()
-                successMsg = "Вы вступили в клуб ${club.name}"
-            } catch (e: Exception) {
-                error = e.userMessage("Не удалось вступить в клуб.")
-            }
-        }
-    }
-
     fun leaveClub() {
         val uid = auth.uid ?: return
         viewModelScope.launch {
@@ -382,23 +358,6 @@ class ProfileViewModel(private val repo: WorkoutRepository? = null) : ViewModel(
     override fun onCleared() {
         profileListener?.remove()
         requestListener?.remove()
-    }
-
-    fun deleteAccount(onDeleted: () -> Unit) {
-        val user = auth.currentUser ?: run { onDeleted(); return }
-        val uid = user.uid
-        viewModelScope.launch {
-            try {
-                try {
-                    db.collection("profiles").document(uid).delete().await()
-                } catch (_: Exception) {}
-                user.delete().await()
-                auth.signOut()
-                onDeleted()
-            } catch (e: Exception) {
-                error = e.userMessage("Не удалось удалить аккаунт.")
-            }
-        }
     }
 
     fun logout(onLoggedOut: () -> Unit) {

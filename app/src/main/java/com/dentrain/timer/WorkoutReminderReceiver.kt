@@ -3,7 +3,6 @@ package com.dentrain.timer
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import com.dentrain.data.AppDatabase
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch

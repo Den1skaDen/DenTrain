@@ -11,18 +11,6 @@ data class ClubModel(
     val ownerUid: String = ""
 )
 
-/** Модель тренера для Firestore */
-data class TrainerModel(
-    val id: String = "",
-    val uid: String = "",
-    val name: String = "",
-    val specialty: String = "",
-    val phone: String = "",
-    val bio: String = "",
-    val clubId: String = "",
-    val clubName: String = ""
-)
-
 /** Модель пользователя для админ-панели */
 data class AdminUserModel(
     val uid: String = "",

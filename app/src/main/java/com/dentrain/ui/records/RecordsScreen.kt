@@ -8,7 +8,6 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -44,7 +43,6 @@ import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -54,7 +52,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -71,19 +68,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.clickable
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.animation.AnimatedVisibility
@@ -99,7 +93,6 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.CornerRadius
@@ -108,13 +101,11 @@ import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
-import com.dentrain.R
 import com.dentrain.data.BETTER_RECORD_EXISTS
 import com.dentrain.data.RecordEntity
 import com.dentrain.data.WorkoutRepository
@@ -123,15 +114,11 @@ import com.dentrain.ui.components.ConfirmDialog
 import com.dentrain.ui.components.DateField
 import com.dentrain.ui.components.EmptyState
 import com.dentrain.ui.components.ErrorText
-import com.dentrain.ui.components.GradientButton
 import com.dentrain.ui.components.RecordCelebrationDialog
-import com.dentrain.ui.components.ScreenHeader
 import com.dentrain.ui.components.MetricNumber
 import com.dentrain.ui.components.rememberMetricNumberWidth
-import com.dentrain.ui.theme.DenTrainTheme
 import com.dentrain.util.Fmt
 import com.dentrain.util.Haptic
-import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -474,7 +461,7 @@ private fun RecordDialog(
 /** Линия изменения рабочего веса по датам. Точки — настоящие записи пользователя. */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun RecordCard(
+internal fun RecordCard(
     record: RecordEntity,
     weightWidth: Dp,
     repsWidth: Dp,
@@ -674,32 +661,6 @@ private fun RecordCard(
                     modifier = Modifier.padding(top = 1.dp)
                 )
             }
-        }
-    }
-}
-
-@Preview(showBackground = true)
-@Composable
-fun RecordsScreenPreview() {
-    DenTrainTheme {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            GradientButton("Добавить рекорд", {}, Modifier.fillMaxWidth(), icon = Icons.Filled.Add)
-            RecordCard(
-                weightWidth = rememberMetricNumberWidth(3, 26.sp, FontWeight.ExtraBold, 26.sp),
-                repsWidth = rememberMetricNumberWidth(2, 26.sp, FontWeight.ExtraBold, 26.sp),
-                record = RecordEntity(
-                    id = 1,
-                    exerciseName = "Жим штанги лёжа",
-                    weight = 80.0,
-                    reps = 8,
-                    dateEpochDay = LocalDate.of(2024, 6, 14).toEpochDay(),
-                    comment = "",
-                    isFavorite = true
-                ),
-                onEdit = {},
-                onDelete = {},
-                onFavoriteToggle = {}
-            )
         }
     }
 }

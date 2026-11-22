@@ -1,7 +1,6 @@
 package com.dentrain
 
 import android.app.KeyguardManager
-import android.content.Context
 import android.content.Intent
 import android.media.AudioAttributes
 import android.media.MediaPlayer

@@ -66,15 +66,11 @@ dependencies {
     implementation(platform("com.google.firebase:firebase-bom:33.4.0"))
     implementation("com.google.firebase:firebase-auth-ktx")
     implementation("com.google.firebase:firebase-firestore-ktx")
-    implementation("com.google.firebase:firebase-storage-ktx")
     implementation("com.google.firebase:firebase-analytics")
     implementation("com.google.android.gms:play-services-auth:21.2.0")
 
     // Coil для загрузки аватарок
     implementation("io.coil-kt:coil-compose:2.6.0")
-
-    // CanHub Image Cropper
-    implementation("com.vanniktech:android-image-cropper:4.6.0")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

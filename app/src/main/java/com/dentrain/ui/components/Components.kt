@@ -5,9 +5,7 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearOutSlowInEasing
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -91,8 +89,6 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.withStyle
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import com.dentrain.data.AdminUserModel
 import com.dentrain.data.AssignedExerciseModel
 import com.dentrain.data.AssignedWorkoutModel
@@ -100,7 +96,6 @@ import com.dentrain.data.ClubModel
 import java.time.temporal.ChronoUnit
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
@@ -112,8 +107,6 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -463,30 +456,6 @@ fun DateField(
             },
             dismissButton = { TextButton(onClick = { show = false }) { Text("Отмена", color = DenTrainPalette.MutedText) } }
         ) { DatePicker(state = state) }
-    }
-}
-
-/** Легковесный каркас вложенных экранов без SubcomposeLayout задержек. */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun ZScreen(
-    title: String,
-    onBack: () -> Unit,
-    actions: @Composable RowScope.() -> Unit = {},
-    content: @Composable (PaddingValues) -> Unit
-) {
-    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-        TopAppBar(
-            title = { Text(title, fontWeight = FontWeight.Bold) },
-            navigationIcon = {
-                BorderedBackButton(onClick = onBack)
-            },
-            actions = actions,
-            colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
-        )
-        GlassBackground(modifier = Modifier.weight(1f)) {
-            content(PaddingValues(0.dp))
-        }
     }
 }
 
