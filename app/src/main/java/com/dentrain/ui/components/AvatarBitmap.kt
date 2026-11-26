@@ -35,7 +35,7 @@ internal fun rememberAvatarBitmap(source: String?): Bitmap? {
     }
 }
 
-private fun decodeAvatar(source: String): Bitmap? {
+internal fun decodeAvatar(source: String): Bitmap? {
     val bytes = try {
         Base64.decode(source, Base64.DEFAULT)
     } catch (_: IllegalArgumentException) {

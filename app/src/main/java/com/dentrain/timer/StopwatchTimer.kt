@@ -66,8 +66,8 @@ class StopwatchTimer(private val context: Context) {
             while (true) {
                 val left = delayEndAt - SystemClock.elapsedRealtime()
                 if (left <= 0) {
-                    TimerNotifier.notifyFinished(context)
-                    startCountUp()
+                    TimerNotifier.notifyStopwatchStarted(context)
+                    startCountUp(delayEndAt)
                     break
                 }
                 _state.update { it.copy(delayRemainingMs = left) }
@@ -76,17 +76,16 @@ class StopwatchTimer(private val context: Context) {
         }
     }
 
-    private fun startCountUp() {
+    private fun startCountUp(origin: Long = SystemClock.elapsedRealtime()) {
         timerJob?.cancel()
         timerJob = null
-        val now = SystemClock.elapsedRealtime()
         _state.update {
             it.copy(
                 isRunning = true,
                 isDelaying = false,
                 delayRemainingMs = 0L,
                 delayEndsAtMs = null,
-                elapsedOriginMs = now - it.elapsedMs
+                elapsedOriginMs = origin - it.elapsedMs
             )
         }
     }

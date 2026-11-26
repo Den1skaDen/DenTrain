@@ -54,7 +54,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -63,6 +70,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import com.dentrain.data.SettingsEntity
 import com.dentrain.data.SetResultEntity
+import com.dentrain.data.RecordUpdate
+import com.dentrain.R
+import androidx.compose.ui.res.painterResource
 import com.dentrain.data.WorkoutRepository
 import com.dentrain.data.WorkoutStatus
 import com.dentrain.data.WorkoutWithExercises
@@ -71,6 +81,7 @@ import com.dentrain.ui.components.ConfirmDialog
 import com.dentrain.ui.components.SetEditDialog
 import com.dentrain.ui.components.appViewModel
 import com.dentrain.ui.components.MetricNumber
+import com.dentrain.ui.workout.NotesEditDialog
 import com.dentrain.util.Fmt
 import com.dentrain.util.Haptic
 import com.dentrain.util.doneSets
@@ -78,6 +89,8 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.Dispatchers
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -91,6 +104,9 @@ class DetailViewModel(private val id: Long, private val repo: WorkoutRepository)
 
     val workout: StateFlow<WorkoutWithExercises?> =
         repo.observeWorkout(id).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+    internal val workoutRecords: StateFlow<List<RecordUpdate>> =
+        repo.observeWorkoutRecords(id).flowOn(Dispatchers.Default)
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     val pinned: StateFlow<Boolean> = repo.pinnedIds.map { id in it }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
     val settings: StateFlow<SettingsEntity> =
@@ -101,11 +117,13 @@ class DetailViewModel(private val id: Long, private val repo: WorkoutRepository)
     fun repeat(onDone: (Long) -> Unit) { perform("Не удалось повторить тренировку.") { onDone(repo.repeatWorkout(id)) } }
     fun updateSet(set: SetResultEntity, reps: Int, weight: Double?, isWarmup: Boolean = set.isWarmup) { perform("Не удалось изменить подход.") { repo.updateSet(set, reps, weight, isWarmup) } }
     fun deleteSet(set: SetResultEntity) { perform("Не удалось удалить подход.") { repo.deleteSet(set) } }
+    fun updateNotes(notes: String) { perform("Не удалось сохранить заметки.") { repo.updateWorkoutDescription(id, notes) } }
 }
 
 @Composable
 private fun DetailCard(
     modifier: Modifier = Modifier,
+    borderColor: Color = DenTrainPalette.SubtleBorder,
     content: @Composable ColumnScope.() -> Unit
 ) {
     Box(
@@ -113,7 +131,7 @@ private fun DetailCard(
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
             .background(DenTrainPalette.Panel)
-            .border(BorderStroke(1.dp, DenTrainPalette.SubtleBorder), RoundedCornerShape(16.dp))
+            .border(BorderStroke(1.dp, borderColor), RoundedCornerShape(16.dp))
             .padding(16.dp)
     ) {
         Column(
@@ -128,7 +146,7 @@ private fun DetailCard(
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun WorkoutDetailScreen(
+internal fun WorkoutDetailScreen(
     workoutId: Long,
     onBack: () -> Unit,
     onEdit: () -> Unit,
@@ -138,6 +156,7 @@ fun WorkoutDetailScreen(
     val vm = appViewModel(key = "detail$workoutId") { DetailViewModel(workoutId, it.repository) }
     OperationErrorDialog(vm.operationError) { vm.operationError = null }
     val workout by vm.workout.collectAsStateWithLifecycle()
+    val workoutRecords by vm.workoutRecords.collectAsStateWithLifecycle()
     val pinned by vm.pinned.collectAsStateWithLifecycle()
     val settings by vm.settings.collectAsStateWithLifecycle()
 
@@ -145,6 +164,7 @@ fun WorkoutDetailScreen(
     var showDelete by remember { mutableStateOf(false) }
     var editingSet by remember { mutableStateOf<SetResultEntity?>(null) }
     var setToDelete by remember { mutableStateOf<SetResultEntity?>(null) }
+    var showNotesEditor by remember { mutableStateOf(false) }
 
     Scaffold(
         containerColor = Color.Black,
@@ -206,33 +226,46 @@ fun WorkoutDetailScreen(
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // Плашка режима вынесена перед карточкой с названием тренировки
-            item {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .clip(CircleShape)
-                            .background(if (editMode) Color(0xFF2A2E1A) else DenTrainPalette.RaisedPanel)
-                            .border(BorderStroke(1.dp, DenTrainPalette.Lime), CircleShape)
-                            .padding(horizontal = 14.dp, vertical = 5.dp)
+            if (editMode) {
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = if (editMode) "Режим редактирования" else "Режим просмотра",
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White
-                        )
+                        Box(
+                            modifier = Modifier
+                                .clip(CircleShape)
+                                .background(Color(0xFF2A2E1A))
+                                .border(BorderStroke(1.dp, DenTrainPalette.Lime), CircleShape)
+                                .padding(horizontal = 14.dp, vertical = 5.dp)
+                        ) {
+                            Text(
+                                text = "Режим редактирования",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                        }
                     }
                 }
             }
-
-            // Карточка с главной информацией о тренировке
             item {
-                DetailCard {
+                val completed = w.workout.status == WorkoutStatus.COMPLETED
+                val gold = Color(0xFFEBC675)
+                DetailCard(borderColor = if (completed) gold else DenTrainPalette.SubtleBorder) {
+                    if (completed) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("Итоги тренировки", Modifier.weight(1f), color = gold, fontWeight = FontWeight.Bold)
+                            Box(
+                                Modifier.size(42.dp).background(Color.White.copy(alpha = 0.12f), RoundedCornerShape(12.dp)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(painterResource(R.drawable.logo_dt), null, Modifier.size(32.dp), tint = Color.White)
+                            }
+                        }
+                        Spacer(Modifier.height(10.dp))
+                    }
                     Text(
                         text = w.workout.title,
                         fontSize = 24.sp,
@@ -262,47 +295,72 @@ fun WorkoutDetailScreen(
 
                     Spacer(Modifier.height(10.dp))
 
-                    // Статистика по упражнениям и подходам с белой окантовкой
+                    val duration = Fmt.durationText(w.workout.startedAt, w.workout.completedAt)
+                    val workingSets = w.exercises.sumOf { exercise -> exercise.sets.count { !it.isWarmup } }
                     Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                        modifier = Modifier.height(IntrinsicSize.Min),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        val exercisesCount = w.exercises.size
-                        val doneSetsCount = w.doneSets()
-
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(DenTrainPalette.RaisedPanel)
-                                .border(BorderStroke(1.dp, Color.White), RoundedCornerShape(8.dp))
-                                .padding(horizontal = 10.dp, vertical = 5.dp)
-                        ) {
-                            Text(
-                                text = "$exercisesCount ${Fmt.plural(exercisesCount, "упражнение", "упражнения", "упражнений")}",
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Medium,
-                                color = Color.White
+                        if (duration != null) {
+                            WorkoutSummaryTile(
+                                "Длительность", duration, Modifier.weight(1f),
+                                borderColor = Color(0xFF5BB9FF),
+                                compactTimeUnits = true
                             )
                         }
+                        WorkoutSummaryTile("Упражнения", w.exercises.size.toString(), Modifier.weight(1f))
+                        WorkoutSummaryTile(
+                            "Подходы",
+                            (if (completed) workingSets else w.doneSets()).toString(),
+                            Modifier.weight(1f)
+                        )
+                    }
 
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(DenTrainPalette.RaisedPanel)
-                                .border(BorderStroke(1.dp, Color.White), RoundedCornerShape(8.dp))
-                                .padding(horizontal = 10.dp, vertical = 5.dp)
+                    if (workoutRecords.isNotEmpty()) {
+                        Spacer(Modifier.height(16.dp))
+                        val shape = RoundedCornerShape(12.dp)
+                        Column(
+                            modifier = Modifier.fillMaxWidth()
+                                .background(DenTrainPalette.RaisedPanel, shape)
+                                .border(1.dp, DenTrainPalette.NeonGreen, shape)
+                                .padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            Text(
-                                text = "$doneSetsCount ${Fmt.plural(doneSetsCount, "подход", "подхода", "подходов")}",
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Medium,
-                                color = Color.White
-                            )
+                            Text("Рекорды тренировки", color = DenTrainPalette.NeonGreen, fontWeight = FontWeight.Bold)
+                            workoutRecords.forEach { (record, previous) ->
+                                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                    Text(record.exerciseName, color = DenTrainPalette.MutedText, fontSize = 13.sp)
+                                    Row(
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        if (previous != null) {
+                                            Text(
+                                                "${Fmt.weight(previous.weight)} кг × ${previous.reps}",
+                                                color = Color.White.copy(alpha = 0.78f),
+                                                fontSize = 14.sp
+                                            )
+                                            Icon(
+                                                Icons.AutoMirrored.Filled.ArrowForward,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(18.dp),
+                                                tint = DenTrainPalette.NeonGreen
+                                            )
+                                        }
+                                        Text(
+                                            "${Fmt.weight(record.weight)} кг × ${record.reps}",
+                                            color = Color.White,
+                                            fontSize = 17.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
 
                     // Прямоугольник заметки с заметной золотой окантовкой и БЕЛЫМ текстом
-                    if (w.workout.description.isNotBlank()) {
+                    if (w.workout.description.isNotBlank() || editMode) {
                         Spacer(Modifier.height(12.dp))
                         Box(
                             modifier = Modifier
@@ -310,6 +368,7 @@ fun WorkoutDetailScreen(
                                 .clip(RoundedCornerShape(12.dp))
                                 .background(DenTrainPalette.RaisedPanel)
                                 .border(BorderStroke(1.5.dp, Color(0xFFFFB300)), RoundedCornerShape(12.dp))
+                                .then(if (editMode) Modifier.clickable { showNotesEditor = true } else Modifier)
                                 .padding(12.dp)
                         ) {
                             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -320,7 +379,7 @@ fun WorkoutDetailScreen(
                                     color = Color(0xFFFFB300)
                                 )
                                 Text(
-                                    text = w.workout.description,
+                                    text = w.workout.description.ifBlank { "Добавить заметку" },
                                     fontSize = 14.sp,
                                     fontWeight = FontWeight.Medium,
                                     color = Color.White,
@@ -369,7 +428,7 @@ fun WorkoutDetailScreen(
 
                     Spacer(Modifier.height(12.dp))
 
-                    val sets = item.sets.sortedBy { it.setNumber }
+                    val sets = item.sets.sortedWith(compareBy<com.dentrain.data.SetResultEntity>({ !it.isWarmup }, { it.setNumber }, { it.id }))
                     if (sets.isEmpty()) {
                         Text(
                             text = "Подходы пока не выполнены",
@@ -380,9 +439,11 @@ fun WorkoutDetailScreen(
                         )
                     } else {
                         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            var warmupNumber = 0
+                            var workingNumber = 0
                             sets.forEach { s ->
                                 val isW = s.isWarmup
-                                val numText = if (isW) "Р${s.setNumber}" else "№ ${s.setNumber}"
+                                val numText = if (isW) "Р${++warmupNumber}" else "№ ${++workingNumber}"
                                 val repsTextColor = if (isW) DenTrainPalette.MutedText else Color.White
                                 val weightTextColor = if (isW) DenTrainPalette.MutedText else DenTrainPalette.Lime
                                 val textWeight = if (isW) FontWeight.Medium else FontWeight.ExtraBold
@@ -503,7 +564,7 @@ fun WorkoutDetailScreen(
                             containerColor = DenTrainPalette.RaisedPanel,
                             contentColor = Color.White
                         ),
-                        border = BorderStroke(1.dp, Color.White),
+                        border = BorderStroke(1.dp, if (pinned) Color(0xFFFFB300) else Color.White),
                         shape = RoundedCornerShape(12.dp),
                         contentPadding = PaddingValues(horizontal = 4.dp)
                     ) {
@@ -596,6 +657,14 @@ fun WorkoutDetailScreen(
         )
     }
 
+    if (showNotesEditor && workout != null) {
+        NotesEditDialog(
+            initialNotes = workout!!.workout.description,
+            onSave = vm::updateNotes,
+            onDismiss = { showNotesEditor = false }
+        )
+    }
+
     setToDelete?.let { set ->
         ConfirmDialog(
             title = "Удалить подход?",
@@ -608,6 +677,7 @@ fun WorkoutDetailScreen(
     editingSet?.let { set ->
         SetEditDialog(
             set = set,
+            swapWeightReps = settings.swapWeightReps,
             onSave = { r, wt, isW ->
                 vm.updateSet(set, r, wt, isW)
                 editingSet = null
@@ -617,6 +687,67 @@ fun WorkoutDetailScreen(
                 editingSet = null
             },
             onDismiss = { editingSet = null }
+        )
+    }
+}
+
+@Composable
+private fun WorkoutSummaryTile(
+    label: String,
+    value: String,
+    modifier: Modifier,
+    borderColor: Color = Color.White,
+    compactTimeUnits: Boolean = false
+) {
+    val shape = RoundedCornerShape(12.dp)
+    Column(
+        modifier = modifier.fillMaxHeight()
+            .background(DenTrainPalette.RaisedPanel, shape)
+            .border(1.dp, borderColor, shape)
+            .padding(8.dp),
+        verticalArrangement = Arrangement.spacedBy(5.dp)
+    ) {
+        Text(label, color = DenTrainPalette.MutedText, fontSize = 12.sp)
+        val displayValue = buildAnnotatedString {
+            if (compactTimeUnits) {
+                value.split(' ').chunked(2).forEachIndexed { index, parts ->
+                    if (index > 0) append(' ')
+                    append(parts.first())
+                    parts.getOrNull(1)?.let { unit ->
+                        append('\u00A0')
+                        withStyle(SpanStyle(color = DenTrainPalette.MutedText, fontSize = 10.sp, fontWeight = FontWeight.Medium)) {
+                            append(unit)
+                        }
+                    }
+                }
+            } else {
+                append(value)
+            }
+        }
+        val valueModifier = if (compactTimeUnits) {
+            Modifier.layout { measurable, constraints ->
+                val line = measurable.measure(constraints.copy(minWidth = 0, maxWidth = Constraints.Infinity))
+                val width = line.width.coerceIn(constraints.minWidth, constraints.maxWidth)
+                val scale = width.toFloat() / line.width.coerceAtLeast(1)
+                layout(width, line.height) {
+                    line.placeRelativeWithLayer(0, 0) {
+                        scaleX = scale
+                        scaleY = scale
+                        transformOrigin = TransformOrigin(0f, 0.5f)
+                    }
+                }
+            }
+        } else {
+            Modifier
+        }
+        Text(
+            displayValue,
+            modifier = valueModifier,
+            color = Color.White,
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = if (compactTimeUnits) 1 else Int.MAX_VALUE,
+            softWrap = !compactTimeUnits
         )
     }
 }

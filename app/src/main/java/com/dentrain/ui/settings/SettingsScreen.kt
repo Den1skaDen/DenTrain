@@ -53,7 +53,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
+import com.dentrain.DenTrainApp
 import com.dentrain.data.SettingsEntity
 import com.dentrain.data.WorkoutRepository
 import com.dentrain.ui.components.BorderedBackButton
@@ -66,7 +68,6 @@ import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
-import com.dentrain.ui.components.rememberAvatarBitmap
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import java.time.LocalDate
@@ -74,8 +75,7 @@ import java.time.LocalDate
 data class EditProfileState(
     val nickname: String = "",
     val username: String = "",
-    val dobEpochDay: Long = LocalDate.now().toEpochDay(),
-    val avatarUrl: String = ""
+    val dobEpochDay: Long = LocalDate.now().toEpochDay()
 )
 
 class ProfileSettingsViewModel(private val repo: WorkoutRepository? = null) : ViewModel() {
@@ -106,8 +106,7 @@ class ProfileSettingsViewModel(private val repo: WorkoutRepository? = null) : Vi
                     val state = EditProfileState(
                         nickname = doc.getString("nickname") ?: "",
                         username = doc.getString("username") ?: "",
-                        dobEpochDay = doc.getLong("dobEpochDay") ?: LocalDate.now().toEpochDay(),
-                        avatarUrl = doc.getString("avatarBase64") ?: ""
+                        dobEpochDay = doc.getLong("dobEpochDay") ?: LocalDate.now().toEpochDay()
                     )
                     originalState = state
                     currentState = state
@@ -128,8 +127,6 @@ class ProfileSettingsViewModel(private val repo: WorkoutRepository? = null) : Vi
     suspend fun saveAvatar(avatar: String) {
         val uid = auth.uid ?: throw UserFacingException("Войдите в аккаунт заново.")
         db.collection("profiles").document(uid).update("avatarBase64", avatar).await()
-        originalState = originalState.copy(avatarUrl = avatar)
-        updateState { it.copy(avatarUrl = avatar) }
     }
 
     fun saveProfile(onSuccess: () -> Unit) {
@@ -202,7 +199,8 @@ fun SettingsScreen(onBack: () -> Unit) {
 
     avatarUri?.let { AvatarCropDialog(it, onDismiss = { avatarUri = null }, onSave = vm::saveAvatar) }
 
-    val decodedBitmap = rememberAvatarBitmap(vm.currentState.avatarUrl)
+    val account = (context.applicationContext as DenTrainApp).container
+    val decodedBitmap = account.profileAvatar?.bitmap?.collectAsStateWithLifecycle()?.value
 
     Scaffold(
         containerColor = Color.Black,

@@ -11,11 +11,10 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -23,7 +22,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -32,6 +32,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Delete
 import com.dentrain.ui.icons.filled.FilterList
 import com.dentrain.ui.icons.filled.EmojiEvents
 import androidx.compose.material.icons.filled.Search
@@ -43,17 +44,16 @@ import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -62,6 +62,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -69,6 +70,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.clickable
 import androidx.compose.ui.input.pointer.pointerInput
@@ -212,6 +214,7 @@ class RecordsViewModel(private val repo: WorkoutRepository, cache: WorkoutScreen
     fun toggleFavorite(record: RecordEntity) { perform("Не удалось обновить избранное.") { repo.toggleRecordFavorite(record) } }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun RecordsScreen(vm: RecordsViewModel, onSettings: () -> Unit) {
     OperationErrorDialog(vm.operationError) { vm.operationError = null }
@@ -276,7 +279,6 @@ fun RecordsScreen(vm: RecordsViewModel, onSettings: () -> Unit) {
                             weightWidth = weightWidth,
                             repsWidth = repsWidth,
                             onEdit = { editing = r },
-                            onDelete = { deleting = r },
                             onFavoriteToggle = { vm.toggleFavorite(r) }
                         )
                     }
@@ -286,36 +288,48 @@ fun RecordsScreen(vm: RecordsViewModel, onSettings: () -> Unit) {
     }
 
     if (showFilterDialog) {
-        AlertDialog(
-            onDismissRequest = { showFilterDialog = false },
-            title = { Text("Фильтр повторений", style = MaterialTheme.typography.titleLarge) },
-            text = {
-                val repRanges = listOf("Все", "1-3", "3-5", "5-8", "8-12", "12-15", "15+")
-                LazyRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    items(repRanges) { range ->
-                        FilterChip(
-                            selected = repRangeFilter == range,
-                            onClick = {
-                                Haptic.click(context)
-                                vm.repRangeFilter.value = range
-                                showFilterDialog = false
-                            },
-                            label = { Text(range, fontSize = 14.sp) }
-                        )
-                    }
+        ConfirmDialog(
+            title = "Фильтр повторений",
+            confirmText = "Закрыть",
+            destructive = false,
+            dismissText = null,
+            onConfirm = { showFilterDialog = false },
+            onDismiss = { showFilterDialog = false }
+        ) {
+            FlowRow(
+                modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+                maxItemsInEachRow = 4
+            ) {
+                for (range in listOf("Все", "1-3", "3-5", "5-8", "8-12", "12-15", "15+")) {
+                    val selected = repRangeFilter == range
+                    FilterChip(
+                        selected = selected,
+                        onClick = {
+                            Haptic.click(context)
+                            vm.repRangeFilter.value = range
+                            showFilterDialog = false
+                        },
+                        label = {
+                            Text(
+                                range.replace('-', '–'),
+                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
+                            )
+                        },
+                        modifier = Modifier.heightIn(min = 48.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = FilterChipDefaults.filterChipColors(
+                            containerColor = DenTrainPalette.RaisedPanel,
+                            labelColor = MaterialTheme.colorScheme.onSurface,
+                            selectedContainerColor = DenTrainPalette.Lime.copy(alpha = 0.15f),
+                            selectedLabelColor = DenTrainPalette.Lime
+                        ),
+                        border = BorderStroke(1.dp, if (selected) DenTrainPalette.Lime else DenTrainPalette.Border)
+                    )
                 }
-            },
-            confirmButton = {
-                TextButton(onClick = { showFilterDialog = false }) {
-                    Text("Закрыть")
-                }
-            },
-            containerColor = DenTrainPalette.Panel,
-            titleContentColor = Color.White
-        )
+            }
+        }
     }
 
     celebrationData?.let { (name, wt, reps) ->
@@ -331,7 +345,7 @@ fun RecordsScreen(vm: RecordsViewModel, onSettings: () -> Unit) {
         RecordDialog(
             record = null,
             vm = vm,
-            recentNames = names,
+            exerciseNames = names,
             onSuccess = { name, wt, reps ->
                 Haptic.success(context)
                 celebrationData = Triple(name, wt, reps)
@@ -340,11 +354,12 @@ fun RecordsScreen(vm: RecordsViewModel, onSettings: () -> Unit) {
         )
     }
 
-    editing?.let {
+    editing?.let { record ->
         RecordDialog(
-            record = it,
+            record = record,
             vm = vm,
-            recentNames = names,
+            exerciseNames = names,
+            onDelete = { deleting = record },
             onSuccess = { name, wt, reps ->
                 Haptic.success(context)
                 celebrationData = Triple(name, wt, reps)
@@ -356,117 +371,167 @@ fun RecordsScreen(vm: RecordsViewModel, onSettings: () -> Unit) {
     deleting?.let { r ->
         ConfirmDialog(
             "Удалить рекорд?", "«${r.exerciseName}», ${Fmt.weight(r.weight)} кг × ${r.reps}",
-            onConfirm = { Haptic.click(context); vm.delete(r.id); deleting = null },
+            onConfirm = {
+                Haptic.click(context)
+                vm.delete(r.id)
+                editing = null
+                deleting = null
+            },
             onDismiss = { deleting = null }
         )
     }
 }
 
-/** Диалоговое окно добавления/редактирования рекорда с кликабельной библиотекой упражнений. */
 @Composable
 private fun RecordDialog(
     record: RecordEntity?,
     vm: RecordsViewModel,
-    recentNames: List<String>,
+    exerciseNames: List<String>,
     onSuccess: (String, String, String) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    onDelete: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
-    var name by remember { mutableStateOf(record?.exerciseName ?: "") }
-    var weight by remember { mutableStateOf(Fmt.weight(record?.weight) ?: "") }
-    var reps by remember { mutableStateOf(record?.reps?.toString() ?: "") }
-    var date by remember { mutableLongStateOf(record?.dateEpochDay ?: LocalDate.now().toEpochDay()) }
-    var comment by remember { mutableStateOf(record?.comment ?: "") }
+    var name by rememberSaveable { mutableStateOf(record?.exerciseName ?: "") }
+    var weight by rememberSaveable { mutableStateOf(Fmt.weight(record?.weight) ?: "") }
+    var reps by rememberSaveable { mutableStateOf(record?.reps?.toString() ?: "") }
+    var date by rememberSaveable { mutableLongStateOf(record?.dateEpochDay ?: LocalDate.now().toEpochDay()) }
+    var comment by rememberSaveable { mutableStateOf(record?.comment ?: "") }
     var error by remember { mutableStateOf<String?>(null) }
     var saving by remember { mutableStateOf(false) }
+    var showExercises by remember { mutableStateOf(false) }
+    val focusManager = LocalFocusManager.current
+    val suggestions = remember(exerciseNames, name) {
+        exerciseNames.filter { it.contains(name.trim(), ignoreCase = true) }
+    }
     val scope = rememberCoroutineScope()
+    val fieldShape = RoundedCornerShape(16.dp)
+    val fieldColors = OutlinedTextFieldDefaults.colors(
+        focusedContainerColor = DenTrainPalette.RaisedPanel,
+        unfocusedContainerColor = DenTrainPalette.RaisedPanel,
+        focusedBorderColor = DenTrainPalette.Lime,
+        unfocusedBorderColor = DenTrainPalette.Border,
+        focusedLabelColor = DenTrainPalette.Lime,
+        unfocusedLabelColor = DenTrainPalette.MutedText
+    )
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(if (record == null) "Новый рекорд" else "Изменить рекорд") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it.take(60) },
-                    label = { Text("Упражнение") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                // Быстрые карточки упражнений из недавних
-                if (recentNames.isNotEmpty()) {
-                    Text("Выбрать из недавних (по клику):", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        items(recentNames) { item ->
-                            FilterChip(
-                                selected = name == item,
-                                onClick = {
-                                    Haptic.click(context)
-                                    name = item
-                                },
-                                label = { Text("✏️ $item", fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
-                            )
-                        }
-                    }
-                }
-
-                Row(
-                    Modifier.fillMaxWidth().height(IntrinsicSize.Min),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ConfirmDialog(
+        title = if (record == null) "Новый рекорд" else "Изменить рекорд",
+        confirmText = "Сохранить",
+        confirmEnabled = !saving,
+        destructive = false,
+        onDismiss = { if (!saving) onDismiss() },
+        titleAction = onDelete?.let { delete ->
+            {
+                IconButton(
+                    onClick = {
+                        focusManager.clearFocus()
+                        delete()
+                    },
+                    enabled = !saving
                 ) {
-                    OutlinedTextField(
-                        weight, { weight = it.filter { c -> c.isDigit() || c == ',' || c == '.' }.take(7) },
-                        label = { Text("Вес, кг") }, singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                        modifier = Modifier.weight(1f).fillMaxHeight()
-                    )
-                    OutlinedTextField(
-                        reps, { reps = it.filter(Char::isDigit).take(3) },
-                        label = { Text("Повторения") }, singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        modifier = Modifier.weight(1f).fillMaxHeight()
-                    )
+                    Icon(Icons.Filled.Delete, "Удалить рекорд", tint = DenTrainPalette.Error)
                 }
-                DateField(date, { date = it }, Modifier.fillMaxWidth())
-                OutlinedTextField(comment, { comment = it.take(200) }, label = { Text("Комментарий (необязательно)") }, modifier = Modifier.fillMaxWidth())
-                ErrorText(error)
             }
         },
-        confirmButton = {
-            TextButton(enabled = !saving, onClick = {
-                saving = true
-                val submittedName = name
-                val submittedWeight = weight
-                val submittedReps = reps
-                val submittedDate = date
-                val submittedComment = comment
-                scope.launch {
-                    try {
-                        error = vm.save(record?.id ?: 0L, submittedName, submittedWeight, submittedReps, submittedDate, submittedComment)
-                        if (error == null) {
-                            onSuccess(submittedName, submittedWeight, submittedReps)
-                            onDismiss()
+        onConfirm = {
+            saving = true
+            val submittedName = name
+            val submittedWeight = weight
+            val submittedReps = reps
+            val submittedDate = date
+            val submittedComment = comment
+            scope.launch {
+                try {
+                    error = vm.save(record?.id ?: 0L, submittedName, submittedWeight, submittedReps, submittedDate, submittedComment)
+                    if (error == null) {
+                        if (record == null ||
+                            !record.exerciseName.trim().equals(submittedName.trim(), ignoreCase = true) ||
+                            Fmt.parseWeight(submittedWeight)?.let { it > record.weight } == true ||
+                            submittedReps.toIntOrNull()?.let { it > record.reps } == true
+                        ) {
+                            onSuccess(submittedName.trim(), submittedWeight, submittedReps)
                         }
-                    } finally {
-                        saving = false
+                        onDismiss()
                     }
+                } finally {
+                    saving = false
                 }
-            }) { Text("Сохранить") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } }
-    )
+            }
+        }
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            OutlinedTextField(
+                value = name,
+                onValueChange = {
+                    name = it.replace('\n', ' ').take(maxOf(60, record?.exerciseName?.length ?: 0))
+                    showExercises = true
+                },
+                label = { Text("Упражнение") },
+                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                modifier = Modifier.fillMaxWidth().onFocusChanged { showExercises = it.isFocused },
+                shape = fieldShape,
+                colors = fieldColors
+            )
+
+            if (showExercises && suggestions.isNotEmpty()) {
+                ExerciseSuggestions(suggestions, Modifier.fillMaxWidth(), selected = name) { exercise ->
+                    Haptic.click(context)
+                    name = exercise
+                    showExercises = false
+                    focusManager.clearFocus()
+                }
+            }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = weight,
+                    onValueChange = { weight = it.filter { c -> c.isDigit() || c == ',' || c == '.' }.take(7) },
+                    label = { Text("Вес, кг") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    modifier = Modifier.weight(1f),
+                    shape = fieldShape,
+                    colors = fieldColors
+                )
+                OutlinedTextField(
+                    value = reps,
+                    onValueChange = { reps = it.filter(Char::isDigit).take(maxOf(3, record?.reps?.toString()?.length ?: 0)) },
+                    label = { Text("Повторы") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.weight(1f),
+                    shape = fieldShape,
+                    colors = fieldColors
+                )
+            }
+            DateField(date, { date = it }, Modifier.fillMaxWidth())
+            OutlinedTextField(
+                value = comment,
+                onValueChange = { comment = it.take(200) },
+                label = { Text("Комментарий") },
+                maxLines = 3,
+                modifier = Modifier.fillMaxWidth(),
+                shape = fieldShape,
+                colors = fieldColors
+            )
+            ErrorText(error)
+        }
+    }
 }
 
-/** Линия изменения рабочего веса по датам. Точки — настоящие записи пользователя. */
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 @Composable
 internal fun RecordCard(
     record: RecordEntity,
     weightWidth: Dp,
     repsWidth: Dp,
     onEdit: () -> Unit,
-    onDelete: () -> Unit,
     onFavoriteToggle: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -525,7 +590,7 @@ internal fun RecordCard(
                     fontSize = 16.sp,
                     fontWeight = FontWeight.Bold,
                     color = Color.White,
-                    maxLines = 1,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f).padding(end = 8.dp)
                 )
@@ -568,13 +633,12 @@ internal fun RecordCard(
                 }
             }
 
-            // 2. Блок показателей: 80 кг  |  8 повторений   [Дата капсула справа]
-            Row(
+            FlowRow(
                 modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                // Вес + кг (на одной базовой линии)
-                Row(verticalAlignment = Alignment.Bottom) {
+                Row(Modifier.align(Alignment.CenterVertically), verticalAlignment = Alignment.Bottom) {
                     MetricNumber(
                         text = weightText,
                         minDigits = 3,
@@ -594,17 +658,7 @@ internal fun RecordCard(
                     )
                 }
 
-                // Вертикальная черта-разделитель |
-                Box(
-                    modifier = Modifier
-                        .padding(horizontal = 12.dp)
-                        .height(20.dp)
-                        .width(1.dp)
-                        .background(Color.White.copy(alpha = 0.15f))
-                )
-
-                // Повторения: 8 повторений
-                Row(verticalAlignment = Alignment.Bottom) {
+                Row(Modifier.align(Alignment.CenterVertically), verticalAlignment = Alignment.Bottom) {
                     MetricNumber(
                         text = record.reps.toString(),
                         minDigits = 2,
@@ -616,7 +670,7 @@ internal fun RecordCard(
                     )
                     Spacer(Modifier.width(5.dp))
                     Text(
-                        text = "повторений",
+                        text = Fmt.plural(record.reps, "повторение", "повторения", "повторений"),
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Medium,
                         color = labelColor,
@@ -624,11 +678,9 @@ internal fun RecordCard(
                     )
                 }
 
-                Spacer(Modifier.weight(1f))
-
-                // Компактная капсула даты максимально справа
                 Box(
                     modifier = Modifier
+                        .align(Alignment.CenterVertically)
                         .background(datePillBg, CircleShape)
                         .border(BorderStroke(1.dp, datePillBorder), CircleShape)
                         .padding(horizontal = 8.dp, vertical = 3.dp)
@@ -665,24 +717,77 @@ internal fun RecordCard(
     }
 }
 
+private const val VisibleExerciseSuggestions = 5
+private val exerciseSuggestionHeight = 48.dp
+
 @Composable
-fun Modifier.simpleVerticalScrollbar(
-    state: LazyListState,
-    width: Dp = 4.dp
-): Modifier = drawWithContent {
+private fun ExerciseSuggestions(
+    suggestions: List<String>,
+    modifier: Modifier = Modifier,
+    selected: String? = null,
+    onSelect: (String) -> Unit
+) {
+    val listState = rememberLazyListState()
+    val shape = RoundedCornerShape(16.dp)
+    val showScrollbar = suggestions.size > VisibleExerciseSuggestions
+    Card(
+        modifier = modifier,
+        shape = shape,
+        border = BorderStroke(1.dp, DenTrainPalette.Border),
+        colors = CardDefaults.cardColors(containerColor = DenTrainPalette.RaisedPanel),
+        elevation = CardDefaults.cardElevation(8.dp)
+    ) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 4.dp)
+                .heightIn(max = exerciseSuggestionHeight * VisibleExerciseSuggestions)
+                .then(if (showScrollbar) Modifier.exerciseSuggestionScrollbar(listState) else Modifier),
+            contentPadding = PaddingValues(start = 4.dp, end = if (showScrollbar) 14.dp else 4.dp)
+        ) {
+            items(suggestions, key = { it }) { exercise ->
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(exerciseSuggestionHeight)
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable { onSelect(exercise) }
+                        .padding(horizontal = 12.dp),
+                    contentAlignment = Alignment.CenterStart
+                ) {
+                    Text(
+                        exercise,
+                        color = if (exercise == selected) DenTrainPalette.Lime else Color.White,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
+    }
+}
+
+private fun Modifier.exerciseSuggestionScrollbar(state: LazyListState): Modifier = drawWithContent {
     drawContent()
-    val firstVisibleElementIndex = state.layoutInfo.visibleItemsInfo.firstOrNull()?.index ?: 0
-    val needScrollbar = state.layoutInfo.visibleItemsInfo.size < state.layoutInfo.totalItemsCount
-    
-    if (needScrollbar) {
-        val elementHeight = this.size.height / state.layoutInfo.totalItemsCount
-        val scrollbarOffsetY = firstVisibleElementIndex * elementHeight
-        val scrollbarHeight = state.layoutInfo.visibleItemsInfo.size * elementHeight
+    val rowHeight = exerciseSuggestionHeight.roundToPx()
+    val contentHeight = state.layoutInfo.totalItemsCount * rowHeight.toFloat()
+    val scrollRange = contentHeight - size.height
+    val trackHeight = size.height - 8.dp.toPx()
+    if (scrollRange > 0f && trackHeight > 0f) {
+        val thumbWidth = 4.dp.toPx()
+        val thumbHeight = (trackHeight * size.height / contentHeight)
+            .coerceIn(minOf(16.dp.toPx(), trackHeight), trackHeight)
+        val scrollOffset = state.firstVisibleItemIndex * rowHeight + state.firstVisibleItemScrollOffset
+        val progress = (scrollOffset / scrollRange).coerceIn(0f, 1f)
         drawRoundRect(
-            color = Color.White.copy(alpha = 0.3f),
-            topLeft = Offset(this.size.width - width.toPx() - 4.dp.toPx(), scrollbarOffsetY),
-            size = Size(width.toPx(), scrollbarHeight),
-            cornerRadius = CornerRadius(width.toPx() / 2, width.toPx() / 2)
+            color = DenTrainPalette.MutedText,
+            topLeft = Offset(
+                size.width - thumbWidth - 5.dp.toPx(),
+                4.dp.toPx() + progress * (trackHeight - thumbHeight)
+            ),
+            size = Size(thumbWidth, thumbHeight),
+            cornerRadius = CornerRadius(thumbWidth / 2)
         )
     }
 }
@@ -731,16 +836,16 @@ fun RecordSearchHeader(
                 onClick = onAddClick,
                 modifier = Modifier
                     .size(48.dp)
-                    .background(Color(0xFF222B3D), CircleShape)
-                    .border(1.dp, Color.White.copy(alpha = 0.2f), CircleShape)
+                    .background(DenTrainPalette.RaisedPanel, CircleShape)
+                    .border(1.dp, Color.White, CircleShape)
             ) {
-                Icon(Icons.Filled.Add, "Добавить", tint = Color.White)
+                Icon(Icons.Filled.Add, "Добавить рекорд", tint = Color.White)
             }
         }
 
         // Search Field (BasicTextField для точного контроля высоты и плавной анимации)
         val searchBorderColor by animateColorAsState(
-            targetValue = if (isFocused) Color.White else DenTrainPalette.Border,
+            targetValue = if (isFocused) DenTrainPalette.Lime else DenTrainPalette.Border,
             animationSpec = tween(300),
             label = "searchBorder"
         )
@@ -771,7 +876,7 @@ fun RecordSearchHeader(
                     },
                 textStyle = TextStyle(color = Color.White, fontSize = 16.sp),
                 singleLine = true,
-                cursorBrush = SolidColor(Color(0xFFFFB300)),
+                cursorBrush = SolidColor(DenTrainPalette.Lime),
                 decorationBox = { innerTextField ->
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -779,14 +884,14 @@ fun RecordSearchHeader(
                     ) {
                         Icon(
                             imageVector = Icons.Filled.Search,
-                            contentDescription = "Поиск",
+                            contentDescription = "Поиск рекордов",
                             tint = DenTrainPalette.MutedText,
                             modifier = Modifier.size(20.dp)
                         )
                         Spacer(Modifier.width(8.dp))
                         Box(Modifier.weight(1f)) {
                             if (text.isEmpty()) {
-                                Text("Найти рекорд", color = DenTrainPalette.MutedText, fontSize = 15.sp)
+                                Text("Поиск", color = DenTrainPalette.MutedText, fontSize = 15.sp, maxLines = 1)
                             }
                             innerTextField()
                         }
@@ -799,39 +904,16 @@ fun RecordSearchHeader(
             if (expanded && suggestions.isNotEmpty()) {
                 Popup(
                     alignment = Alignment.TopStart,
-                    offset = IntOffset(0, 150),
+                    offset = IntOffset(0, with(LocalDensity.current) { 52.dp.roundToPx() }),
                     properties = PopupProperties(focusable = false)
                 ) {
                     val density = LocalDensity.current
                     val widthDp = with(density) { textFieldWidth.toDp() }
-                    Card(
-                        modifier = Modifier
-                            .width(widthDp)
-                            .heightIn(max = (5 * 48).dp)
-                            .border(1.dp, DenTrainPalette.Border, RoundedCornerShape(12.dp)),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = CardDefaults.cardColors(containerColor = Color(0xFF222B3D)),
-                        elevation = CardDefaults.cardElevation(8.dp)
-                    ) {
-                        val listState = rememberLazyListState()
-                        LazyColumn(
-                            state = listState,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .simpleVerticalScrollbar(listState)
-                        ) {
-                            items(suggestions) { name ->
-                                DropdownMenuItem(
-                                    text = { Text(name, color = Color.White) },
-                                    onClick = {
-                                        text = name
-                                        expanded = false
-                                        onQueryChange(name)
-                                        focusManager.clearFocus()
-                                    }
-                                )
-                            }
-                        }
+                    ExerciseSuggestions(suggestions, Modifier.width(widthDp)) { name ->
+                        text = name
+                        expanded = false
+                        onQueryChange(name)
+                        focusManager.clearFocus()
                     }
                 }
             }
@@ -844,7 +926,7 @@ fun RecordSearchHeader(
         ) {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 // [Favorite Filter]
-                val favBtnBg = if (isFavoritesOnly) Color(0xFF333D55) else Color(0xFF222B3D)
+                val favBtnBg = DenTrainPalette.RaisedPanel
                 val favBtnBorder = if (isFavoritesOnly) Color(0xFF00B0FF).copy(alpha = 0.5f) else DenTrainPalette.Border
                 
                 IconButton(
@@ -880,9 +962,9 @@ fun RecordSearchHeader(
                 }
 
                 // [Filter]
-                val filterBtnBg = if (isFilterActive) Color(0xFF333D55) else Color(0xFF222B3D)
-                val filterBtnBorder = if (isFilterActive) Color(0xFF00B0FF).copy(alpha = 0.5f) else DenTrainPalette.Border
-                val filterIconColor = if (isFilterActive) Color(0xFF00B0FF) else Color.White
+                val filterBtnBg = if (isFilterActive) DenTrainPalette.Lime.copy(alpha = 0.15f) else DenTrainPalette.RaisedPanel
+                val filterBtnBorder = if (isFilterActive) DenTrainPalette.Lime else DenTrainPalette.Border
+                val filterIconColor = if (isFilterActive) DenTrainPalette.Lime else Color.White
 
                 IconButton(
                     onClick = onFilterClick,
@@ -891,7 +973,7 @@ fun RecordSearchHeader(
                         .background(filterBtnBg, CircleShape)
                         .border(1.dp, filterBtnBorder, CircleShape)
                 ) {
-                    Icon(Icons.Filled.FilterList, "Фильтр", tint = filterIconColor)
+                    Icon(Icons.Filled.FilterList, "Фильтр повторений", tint = filterIconColor)
                 }
             }
         }

@@ -9,6 +9,7 @@ import com.dentrain.data.DiarySync
 import kotlinx.coroutines.*
 import java.util.UUID
 import com.dentrain.data.AppDatabase
+import com.dentrain.data.ProfileAvatarCache
 import com.dentrain.data.WorkoutRepository
 import com.dentrain.data.WorkoutDelivery
 import com.dentrain.data.WorkoutScreenCache
@@ -16,7 +17,11 @@ import com.dentrain.timer.RestTimer
 import com.dentrain.timer.StopwatchTimer
 import com.dentrain.timer.TimerNotifier
 import com.dentrain.timer.WorkoutReminderNotifier
+import com.dentrain.timer.WorkoutReminderSchedule
 import com.dentrain.timer.WorkoutReminderScheduler
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.map
 
 /** Простейший «контейнер зависимостей»: один экземпляр базы, репозитория и таймера на всё приложение. */
 class AppContainer(app: Application, val uid: String?, val databaseName: String) {
@@ -24,9 +29,10 @@ class AppContainer(app: Application, val uid: String?, val databaseName: String)
     val database = AppDatabase.create(app, databaseName)
     val repository = WorkoutRepository(database, uid)
     val screenCache by lazy { WorkoutScreenCache(repository, screenScope) }
+    internal val profileAvatar by lazy { uid?.let { ProfileAvatarCache(app, it, screenScope) } }
     val workoutDelivery by lazy { WorkoutDelivery(app) }
     val sync by lazy { uid?.let { DiarySync(database, it, repository) } }
-    val restTimer = RestTimer(app)
+    val restTimer = RestTimer(app, databaseName)
     val stopwatchTimer = StopwatchTimer(app)
 
     fun stopScreenCache() = screenScope.cancel()
@@ -36,6 +42,7 @@ class DenTrainApp : Application() {
     private val prefs by lazy { getSharedPreferences("diary_accounts", MODE_PRIVATE) }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var syncJob: Job? = null
+    private var reminderJob: Job? = null
     private var selected by mutableStateOf<AppContainer?>(null)
     val container: AppContainer get() = requireNotNull(selected)
     var needsDiaryChoice by mutableStateOf(false)
@@ -53,10 +60,23 @@ class DenTrainApp : Application() {
         }
         syncJob?.cancel()
         syncJob = null
-        selected?.stopScreenCache()
+        reminderJob?.cancel()
+        val previous = selected
+        previous?.let {
+            it.restTimer.close()
+            it.stopwatchTimer.reset()
+            it.stopScreenCache()
+            WorkoutReminderNotifier.cancel(this)
+        }
         selected = AppContainer(this, uid, name)
+        val account = container
         if (!needsDiaryChoice) startSync(container)
-        WorkoutReminderScheduler.sync(this)
+        reminderJob = scope.launch(Dispatchers.Main.immediate) {
+            // При холодном запуске по сигналу receiver сам обработает текущий будильник.
+            account.repository.settings.map { WorkoutReminderSchedule.from(it) }
+                .distinctUntilChanged().drop(if (previous == null) 1 else 0)
+                .collect { WorkoutReminderScheduler.sync(this@DenTrainApp) }
+        }
     }
 
     private fun startSync(account: AppContainer) {

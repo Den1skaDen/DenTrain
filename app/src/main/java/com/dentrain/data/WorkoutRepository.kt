@@ -14,6 +14,8 @@ import java.time.LocalDate
 
 internal const val BETTER_RECORD_EXISTS = "Уже есть результат с таким же или большим весом и числом повторений"
 
+internal data class RecordUpdate(val record: RecordEntity, val previous: RecordEntity?)
+
 /** Упражнение в форме редактора (уже проверенное и разобранное). */
 data class ExerciseDraft(
     val id: Long,            // 0 = новое упражнение
@@ -66,6 +68,13 @@ class WorkoutRepository(private val db: AppDatabase, private val owner: String?)
             }
 
     fun observeWorkout(id: Long): Flow<WorkoutWithExercises?> = workouts.observe(id)
+    internal fun observeWorkoutRecords(id: Long): Flow<List<RecordUpdate>> = workouts.observe(id).map { workout ->
+        if (workout == null || workout.workout.status != WorkoutStatus.COMPLETED) return@map emptyList()
+        val history = if (workout.exercises.any { entry ->
+            entry.sets.any { it.isPersonalRecord == null && it.qualifiesForRecord() }
+        }) workouts.allOnce() else emptyList()
+        workoutRecordUpdates(workout, history)
+    }
     suspend fun getWorkout(id: Long): WorkoutWithExercises? = workouts.getFull(id)
 
     /**
@@ -187,26 +196,43 @@ class WorkoutRepository(private val db: AppDatabase, private val owner: String?)
         weight: Double?,
         isTimeBased: Boolean,
         isWarmup: Boolean = false
-    ): RecordEntity? = db.withTransaction {
-        workouts.insertSet(
-            SetResultEntity(
-                exerciseId = exerciseId, setNumber = workouts.nextSetNumber(exerciseId),
-                reps = reps, weight = weight, isTimeBased = isTimeBased, isWarmup = isWarmup
-            )
+    ): RecordEntity? = addSetWithRecord(exerciseId, reps, weight, isTimeBased, isWarmup)?.record
+
+    internal suspend fun addSetWithRecord(
+        exerciseId: Long,
+        reps: Int,
+        weight: Double?,
+        isTimeBased: Boolean,
+        isWarmup: Boolean
+    ): RecordUpdate? = db.withTransaction {
+        val set = SetResultEntity(
+            exerciseId = exerciseId, setNumber = workouts.nextSetNumber(exerciseId),
+            reps = reps, weight = weight, isTimeBased = isTimeBased, isWarmup = isWarmup
         )
-        if (isWarmup || isTimeBased || weight == null || !weight.isFinite() || weight <= 0 || reps <= 0) {
-            return@withTransaction null
+        val update = if (set.qualifiesForRecord() && weight != null) {
+            storeRecord(RecordEntity(
+                exerciseName = workouts.getExerciseName(exerciseId),
+                weight = weight,
+                reps = reps,
+                dateEpochDay = LocalDate.now().toEpochDay()
+            ))
+        } else {
+            null
         }
-        storeRecord(RecordEntity(
-            exerciseName = workouts.getExerciseName(exerciseId),
-            weight = weight,
-            reps = reps,
-            dateEpochDay = LocalDate.now().toEpochDay()
+        workouts.insertSet(set.copy(
+            isPersonalRecord = update != null,
+            previousRecordWeight = update?.previous?.weight,
+            previousRecordReps = update?.previous?.reps
         ))
+        update
     }
 
     suspend fun updateSet(set: SetResultEntity, reps: Int, weight: Double?, isWarmup: Boolean = set.isWarmup) {
-        workouts.updateSet(set.copy(reps = reps, weight = weight, isWarmup = isWarmup))
+        if (set.reps == reps && set.weight == weight && set.isWarmup == isWarmup) return
+        workouts.updateSet(set.copy(
+            reps = reps, weight = weight, isWarmup = isWarmup,
+            isPersonalRecord = null, previousRecordWeight = null, previousRecordReps = null
+        ))
     }
 
     /** После удаления подхода номера оставшихся пересчитываются, чтобы не было дыр (1, 3, 4). */
@@ -290,17 +316,24 @@ class WorkoutRepository(private val db: AppDatabase, private val owner: String?)
 
     // ----- рекорды -----
 
-    suspend fun saveOrUpdateRecord(r: RecordEntity): RecordEntity? = db.withTransaction { storeRecord(r) }
+    suspend fun saveOrUpdateRecord(r: RecordEntity): RecordEntity? = db.withTransaction { storeRecord(r)?.record }
 
     suspend fun editRecord(r: RecordEntity): String? = db.withTransaction {
         val existing = records.getById(r.id) ?: return@withTransaction "Рекорд уже удалён"
+        val updated = r.copy(isFavorite = existing.isFavorite)
+        if (existing.exerciseName.trim().equals(r.exerciseName.trim(), ignoreCase = true) &&
+            existing.weight == r.weight && existing.reps == r.reps
+        ) {
+            if (updated != existing) records.update(updated)
+            return@withTransaction null
+        }
         val others = recordsForExercise(r.exerciseName).filter { it.id != r.id }
         if (others.any { it.covers(r) }) return@withTransaction BETTER_RECORD_EXISTS
-        replaceRecords(r.copy(isFavorite = existing.isFavorite), others.filter { r.covers(it) })
+        replaceRecords(updated, others.filter { r.covers(it) })
         null
     }
 
-    private suspend fun storeRecord(r: RecordEntity, keepImportedDetails: Boolean = false): RecordEntity? {
+    private suspend fun storeRecord(r: RecordEntity, keepImportedDetails: Boolean = false): RecordUpdate? {
         val current = compactExerciseRecords(recordsForExercise(r.exerciseName))
         val better = current.firstOrNull { it.covers(r) }
         if (better != null) {
@@ -310,7 +343,8 @@ class WorkoutRepository(private val db: AppDatabase, private val owner: String?)
         val surpassed = current.filter { r.covers(it) }
         val previous = surpassed.firstOrNull { it.weight == r.weight || it.reps == r.reps }
             ?: surpassed.firstOrNull()
-        return replaceRecords(r.copy(id = previous?.id ?: 0), surpassed)
+        val comparison = surpassed.firstOrNull { it.reps == r.reps } ?: previous
+        return RecordUpdate(replaceRecords(r.copy(id = previous?.id ?: 0), surpassed), comparison)
     }
 
     private suspend fun recordsForExercise(exerciseName: String): List<RecordEntity> =

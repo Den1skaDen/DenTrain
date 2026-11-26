@@ -12,7 +12,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         WorkoutEntity::class, ExerciseEntity::class, SetResultEntity::class,
         PinnedWorkoutEntity::class, RecordEntity::class, SettingsEntity::class, DiaryLink::class
     ],
-    version = 15,
+    version = 16,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -77,11 +77,19 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_15_16 = object : Migration(15, 16) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE set_results ADD COLUMN isPersonalRecord INTEGER")
+                db.execSQL("ALTER TABLE set_results ADD COLUMN previousRecordWeight REAL")
+                db.execSQL("ALTER TABLE set_results ADD COLUMN previousRecordReps INTEGER")
+            }
+        }
+
         fun create(context: Context, name: String = LEGACY_FILE_NAME): AppDatabase =
             Room.databaseBuilder(context.applicationContext, AppDatabase::class.java, name)
                 .addMigrations(
                     MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12,
-                    MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15
+                    MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16
                 )
                 .build()
     }

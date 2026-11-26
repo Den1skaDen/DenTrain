@@ -64,13 +64,13 @@ class DiaryTestRunner : Instrumentation() {
             }
             recordsProgressUsesWorkingHistory()
             screenCacheTracksLocalChanges()
+            recordsRetainOnlyBestResults()
+            migrationPreservesDiary()
             if (progressOnly) {
-                result.putString("stream", "PASS: records progress history, filters and chart scale\nPASS: screen cache and workout history\n")
+                result.putString("stream", "PASS: personal records and progress\nPASS: screen cache and workout history\nPASS: diary migration and persisted workout records\n")
                 finish(Activity.RESULT_OK, result)
                 return
             }
-            recordsRetainOnlyBestResults()
-            migrationPreservesDiary()
             offlineWorkoutRestoresIntoFreshDatabase()
             offlineAssignmentReachesStudentAndConfirmsOnce()
             result.putString("stream", "PASS: personal records and progress\nPASS: Room migration and diary synchronization\nPASS: offline coaching delivery\n")
@@ -180,16 +180,19 @@ class DiaryTestRunner : Instrumentation() {
             val exerciseId = repo.getWorkout(workoutId)!!.exercises.single().exercise.id
             val first = checkNotNull(repo.addSet(exerciseId, 3, 12.0, isTimeBased = false))
             repo.toggleRecordFavorite(first)
-            val heavier = repo.addSet(exerciseId, 3, 15.0, isTimeBased = false)
-            check(heavier?.id == first.id && heavier.weight == 15.0 && heavier.isFavorite)
+            val heavier = checkNotNull(repo.addSetWithRecord(exerciseId, 3, 15.0, isTimeBased = false, isWarmup = false))
+            check(heavier.record.id == first.id && heavier.record.weight == 15.0 && heavier.record.isFavorite)
+            check(heavier.previous?.weight == 12.0 && heavier.previous.reps == 3)
             check(repo.addSet(exerciseId, 3, 15.0, isTimeBased = false) == null)
             check(repo.addSet(exerciseId, 2, 13.0, isTimeBased = false) == null)
-            check(repo.addSet(exerciseId, 8, 12.0, isTimeBased = false) != null)
+            val moreReps = checkNotNull(repo.addSetWithRecord(exerciseId, 8, 12.0, isTimeBased = false, isWarmup = false))
+            check(moreReps.previous == null)
             check(db.recordDao().getOnceAll().size == 2)
             check(repo.addSet(exerciseId, 10, 25.0, isTimeBased = false, isWarmup = true) == null)
             check(repo.addSet(exerciseId, 30, 25.0, isTimeBased = true) == null)
             check(repo.addSet(exerciseId, 4, 15.0, isTimeBased = false)?.id == first.id)
-            check(repo.addSet(exerciseId, 8, 16.0, isTimeBased = false) != null)
+            val improved = checkNotNull(repo.addSetWithRecord(exerciseId, 8, 16.0, isTimeBased = false, isWarmup = false))
+            check(improved.previous == moreReps.record)
             val best = db.recordDao().getOnceAll().single()
             check(best.weight == 16.0 && best.reps == 8 && best.isFavorite)
             check(repo.getWorkout(workoutId)!!.exercises.single().sets.size == 9)
@@ -216,13 +219,16 @@ class DiaryTestRunner : Instrumentation() {
             } finally {
                 original.close()
             }
-            // Room v14 and v15 differ only in these indexes. Recreate the v14 layout.
+            // Recreate the v14 layout before testing the chained migrations.
             SQLiteDatabase.openDatabase(context.getDatabasePath(name).path, null, SQLiteDatabase.OPEN_READWRITE).use { old ->
                 listOf(
                     "workouts_status_dateEpochDay", "workouts_cloudId", "workouts_assignmentId",
                     "records_dateEpochDay", "records_weight", "set_results_exerciseId_setNumber"
                 ).forEach { old.execSQL("DROP INDEX index_$it") }
                 old.execSQL("CREATE INDEX index_set_results_exerciseId ON set_results (exerciseId)")
+                listOf("isPersonalRecord", "previousRecordWeight", "previousRecordReps").forEach {
+                    old.execSQL("ALTER TABLE set_results DROP COLUMN $it")
+                }
                 old.version = 14
             }
             val migrated = AppDatabase.create(context, name)
@@ -233,8 +239,19 @@ class DiaryTestRunner : Instrumentation() {
                 check(set.reps == 10 && set.weight == 12.75 && set.isWarmup)
                 check(migrated.workoutDao().pinsOnce().single().workoutId == workoutId)
                 check(migrated.recordDao().getOnceAll().single().weight == 12.75)
+                val repo = WorkoutRepository(migrated, null)
+                repo.addSet(set.exerciseId, 10, 15.0, isTimeBased = false)
+                repo.finishWorkout(workoutId)
             } finally {
                 migrated.close()
+            }
+            val reopened = AppDatabase.create(context, name)
+            try {
+                val update = WorkoutRepository(reopened, null).observeWorkoutRecords(workoutId).first().single()
+                check(update.record.weight == 15.0 && update.previous?.weight == 12.75)
+                check(update.previous?.reps == 10)
+            } finally {
+                reopened.close()
             }
         } finally {
             context.deleteDatabase(name)

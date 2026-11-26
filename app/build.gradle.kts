@@ -11,6 +11,23 @@ android {
     compileSdk = 34
 
     defaultConfig {
+        val verificationEndpoint = providers.gradleProperty("denTrainVerificationEndpoint")
+            .orElse("https://dentrain-email-verification.dorov-thletics.workers.dev/sendVerificationEmail")
+            .get()
+        require(verificationEndpoint.isEmpty() || verificationEndpoint.matches(
+            Regex("https://[a-z0-9][a-z0-9.-]+/sendVerificationEmail")
+        )) { "denTrainVerificationEndpoint must be an HTTPS /sendVerificationEmail URL." }
+        buildConfigField("String", "VERIFICATION_ENDPOINT", "\"$verificationEndpoint\"")
+        val resetEndpoint = providers.gradleProperty("denTrainPasswordResetEndpoint")
+            .orElse(
+                verificationEndpoint.ifEmpty {
+                    "https://dentrain-email-verification.dorov-thletics.workers.dev/sendVerificationEmail"
+                }.replaceAfterLast('/', "sendPasswordResetEmail")
+            ).get()
+        require(resetEndpoint.matches(Regex("https://[a-z0-9][a-z0-9.-]+/sendPasswordResetEmail"))) {
+            "denTrainPasswordResetEndpoint must be an HTTPS /sendPasswordResetEmail URL."
+        }
+        buildConfigField("String", "PASSWORD_RESET_ENDPOINT", "\"$resetEndpoint\"")
         applicationId = "com.dentrain"
         minSdk = 26
         targetSdk = 34
@@ -33,6 +50,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
@@ -64,7 +82,9 @@ dependencies {
 
     // Firebase
     implementation(platform("com.google.firebase:firebase-bom:33.4.0"))
-    implementation("com.google.firebase:firebase-auth-ktx")
+    // Firebase Hosting links for email actions require a newer Auth SDK than this BoM provides.
+    implementation("com.google.firebase:firebase-auth:24.0.1")
+    implementation("com.google.firebase:firebase-functions")
     implementation("com.google.firebase:firebase-firestore-ktx")
     implementation("com.google.firebase:firebase-analytics")
     implementation("com.google.android.gms:play-services-auth:21.2.0")

@@ -4,8 +4,6 @@ import com.dentrain.ui.components.launchUserAction
 import com.dentrain.ui.components.ConfirmDialog
 import com.dentrain.util.userMessage
 import com.dentrain.ui.theme.DenTrainPalette
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -14,15 +12,21 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -33,49 +37,46 @@ import com.dentrain.ui.icons.filled.CameraAlt
 import com.dentrain.ui.icons.filled.Logout
 import androidx.compose.material.icons.filled.Settings
 import com.dentrain.ui.icons.filled.Sports
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import android.Manifest
 import android.app.TimePickerDialog
-import android.content.Context
-import android.content.pm.PackageManager
-import android.os.Build
-import androidx.core.content.ContextCompat
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.dentrain.data.SettingsEntity
 import com.dentrain.data.WorkoutRepository
-import com.dentrain.timer.WorkoutReminderScheduler
+import com.dentrain.timer.TimerNotifier
+import com.dentrain.timer.WorkoutReminderNotifier
+import com.dentrain.ui.components.LocalAlertSettings
+import com.dentrain.ui.components.rememberNotificationAccess
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.CancellationException
 import com.dentrain.util.Haptic
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import com.dentrain.ui.icons.filled.AccessTime
-import com.dentrain.ui.icons.filled.AdminPanelSettings
-import com.dentrain.ui.icons.filled.Business
-import com.dentrain.ui.icons.filled.CameraAlt
-import com.dentrain.ui.icons.filled.Logout
-import androidx.compose.material.icons.filled.Settings
-import com.dentrain.ui.icons.filled.Sports
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.foundation.layout.width
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.key
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -86,7 +87,13 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLinkStyles
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withLink
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.ViewModel
@@ -107,7 +114,7 @@ import com.dentrain.ui.components.SectionTitle
 import com.dentrain.ui.components.AssignedWorkoutDetailPanel
 import com.dentrain.ui.components.UserProfilePanel
 import com.dentrain.ui.components.appViewModel
-import com.dentrain.ui.components.rememberAvatarBitmap
+import com.dentrain.DenTrainApp
 import com.dentrain.util.Fmt
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
@@ -119,7 +126,6 @@ data class UserProfile(
     val nickname: String = "",
     val username: String = "",
     val dobEpochDay: Long = LocalDate.now().toEpochDay(),
-    val avatarUrl: String = "",
     val role: String = "athlete", // "admin", "trainer", "athlete"
     val gender: String = "male", // "male" или "female"
     val clubId: String? = null,
@@ -138,19 +144,11 @@ class ProfileViewModel(private val repo: WorkoutRepository? = null) : ViewModel(
     fun setAutoRest(enabled: Boolean) = updateSettings { it.copy(autoRestTimer = enabled) }
     fun setSwapWeightReps(enabled: Boolean) = updateSettings { it.copy(swapWeightReps = enabled) }
 
-    fun setReminderEnabled(enabled: Boolean, context: Context) = updateSettings {
-        val updated = it.copy(reminderEnabled = enabled)
-        WorkoutReminderScheduler.sync(context)
-        updated
-    }
+    fun setReminderEnabled(enabled: Boolean) = updateSettings { it.copy(reminderEnabled = enabled) }
 
-    fun setWorkoutStartTime(time: String, context: Context) = updateSettings {
-        val updated = it.copy(workoutStartTime = time)
-        WorkoutReminderScheduler.sync(context)
-        updated
-    }
+    fun setWorkoutStartTime(time: String) = updateSettings { it.copy(workoutStartTime = time) }
 
-    fun toggleScheduledDay(day: Int, context: Context) = updateSettings {
+    fun toggleScheduledDay(day: Int) = updateSettings {
         val currentSet = it.scheduledDays.split(",").mapNotNull { s -> s.trim().toIntOrNull() }.toMutableSet()
         if (day in currentSet) {
             if (currentSet.size > 1) currentSet.remove(day)
@@ -158,12 +156,10 @@ class ProfileViewModel(private val repo: WorkoutRepository? = null) : ViewModel(
             currentSet.add(day)
         }
         val str = currentSet.sorted().joinToString(",")
-        val updated = it.copy(scheduledDays = str)
-        WorkoutReminderScheduler.sync(context)
-        updated
+        it.copy(scheduledDays = str)
     }
 
-    fun toggleReminderLeadOption(leadMinutes: Int, context: Context) = updateSettings {
+    fun toggleReminderLeadOption(leadMinutes: Int) = updateSettings {
         val currentSet = it.reminderLeadOptions.split(",").mapNotNull { s -> s.trim().toIntOrNull() }.toMutableSet()
         if (leadMinutes in currentSet) {
             if (currentSet.size > 1) currentSet.remove(leadMinutes)
@@ -171,9 +167,7 @@ class ProfileViewModel(private val repo: WorkoutRepository? = null) : ViewModel(
             currentSet.add(leadMinutes)
         }
         val str = currentSet.sortedDescending().joinToString(",")
-        val updated = it.copy(reminderLeadOptions = str)
-        WorkoutReminderScheduler.sync(context)
-        updated
+        it.copy(reminderLeadOptions = str)
     }
 
     private fun updateSettings(change: (SettingsEntity) -> SettingsEntity) {
@@ -185,6 +179,14 @@ class ProfileViewModel(private val repo: WorkoutRepository? = null) : ViewModel(
     var profile by mutableStateOf(UserProfile())
     var clubMembers by mutableStateOf<List<AdminUserModel>>(emptyList())
     var currentClubDetails by mutableStateOf<ClubModel?>(null)
+    var availableClubs by mutableStateOf<List<ClubModel>>(emptyList())
+        private set
+    var loadingAvailableClubs by mutableStateOf(false)
+        private set
+    var joiningClub by mutableStateOf(false)
+        private set
+    var clubSelectionError by mutableStateOf<String?>(null)
+        private set
     var pendingTrainerRequests by mutableStateOf<List<TrainerRequestModel>>(emptyList())
     private var profileListener: ListenerRegistration? = null
     private var requestListener: ListenerRegistration? = null
@@ -236,7 +238,6 @@ class ProfileViewModel(private val repo: WorkoutRepository? = null) : ViewModel(
                 nickname = doc.getString("nickname") ?: "",
                 username = doc.getString("username") ?: "",
                 dobEpochDay = doc.getLong("dobEpochDay") ?: LocalDate.now().toEpochDay(),
-                avatarUrl = doc.getString("avatarBase64") ?: "",
                 role = doc.getString("role") ?: "athlete",
                 gender = doc.getString("gender") ?: "male",
                 clubId = doc.getString("clubId"),
@@ -255,6 +256,55 @@ class ProfileViewModel(private val repo: WorkoutRepository? = null) : ViewModel(
                     .mapNotNull { it.activeTrainerRequest() }.sortedByDescending { it.timestamp }
             }
 
+    }
+
+    fun loadAvailableClubs() {
+        if (loadingAvailableClubs || joiningClub) return
+        loadingAvailableClubs = true
+        clubSelectionError = null
+        availableClubs = emptyList()
+        viewModelScope.launch {
+            try {
+                availableClubs = db.collection("clubs").orderBy("name").get().await().documents.map { doc ->
+                    ClubModel(
+                        id = doc.id,
+                        name = doc.getString("name").orEmpty(),
+                        address = doc.getString("address").orEmpty()
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                clubSelectionError = e.userMessage("Не удалось загрузить список клубов.")
+            } finally {
+                loadingAvailableClubs = false
+            }
+        }
+    }
+
+    fun joinClub(club: ClubModel) {
+        val uid = auth.uid ?: return
+        if (joiningClub || !profile.clubId.isNullOrBlank()) return
+        joiningClub = true
+        clubSelectionError = null
+        viewModelScope.launch {
+            try {
+                val profileRef = db.collection("profiles").document(uid)
+                val joined = db.runTransaction { transaction ->
+                    val currentClubId = transaction.get(profileRef).getString("clubId")
+                    if (!currentClubId.isNullOrBlank()) return@runTransaction false
+                    transaction.update(profileRef, mapOf("clubId" to club.id, "clubName" to club.name))
+                    true
+                }.await()
+                if (joined) successMsg = "Вы вступили в клуб «${club.name}»"
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                clubSelectionError = e.userMessage("Не удалось вступить в клуб.")
+            } finally {
+                joiningClub = false
+            }
+        }
     }
 
     fun loadClubDetails(clubId: String) {
@@ -293,6 +343,28 @@ class ProfileViewModel(private val repo: WorkoutRepository? = null) : ViewModel(
             } catch (e: Exception) {
                 error = e.userMessage("Ошибка загрузки информации о клубе.")
             }
+        }
+    }
+
+    suspend fun loadTrainerAccount(uid: String): AdminUserModel? {
+        return try {
+            val doc = db.collection("profiles").document(uid).get().await()
+            if (!doc.exists()) return null
+            AdminUserModel(
+                uid = doc.id,
+                email = doc.getString("email").orEmpty(),
+                nickname = doc.getString("nickname").orEmpty(),
+                username = doc.getString("username").orEmpty(),
+                avatarBase64 = doc.getString("avatarBase64").orEmpty(),
+                role = doc.getString("role").orEmpty(),
+                dobEpochDay = doc.getLong("dobEpochDay"),
+                clubId = doc.getString("clubId"),
+                clubName = doc.getString("clubName")
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
         }
     }
 
@@ -368,6 +440,48 @@ class ProfileViewModel(private val repo: WorkoutRepository? = null) : ViewModel(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
+private fun TrainerProfileLink(
+    vm: ProfileViewModel,
+    trainerUid: String,
+    prefix: String,
+    fallbackName: String,
+    linkColor: Color,
+    onOpen: (AdminUserModel) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    key(trainerUid) {
+        var loadAttempt by remember { mutableStateOf(0) }
+        val trainer by produceState<AdminUserModel?>(null, loadAttempt) {
+            val account = vm.loadTrainerAccount(trainerUid)
+            value = account
+            if (loadAttempt > 0) {
+                if (account != null) onOpen(account)
+                else vm.error = "Не удалось открыть профиль тренера."
+            }
+        }
+        val username = trainer?.username.orEmpty().trim().removePrefix("@")
+        val label = if (username.isNotBlank()) "@$username" else fallbackName
+        Text(
+            text = buildAnnotatedString {
+                append(prefix)
+                withLink(LinkAnnotation.Clickable(
+                    tag = trainerUid,
+                    styles = TextLinkStyles(style = SpanStyle(color = linkColor))
+                ) {
+                    val account = trainer
+                    if (account != null) onOpen(account)
+                    else loadAttempt++
+                }) {
+                    append(label)
+                }
+            },
+            modifier = modifier,
+            color = DenTrainPalette.MutedText
+        )
+    }
+}
+
+@Composable
 fun ProfileScreen(
     onLogout: () -> Unit,
     onOpenAdmin: (() -> Unit)? = null,
@@ -379,25 +493,8 @@ fun ProfileScreen(
     val settingsState = vm.settings?.collectAsStateWithLifecycle()?.value
     val settings = settingsState ?: SettingsEntity()
 
-    val permissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { isGranted ->
-        if (isGranted) {
-            vm.setReminderEnabled(true, context)
-        } else {
-            vm.error = "Уведомления отключены. Разрешите их в настройках Android, чтобы получать напоминания."
-        }
-    }
-
-    fun toggleReminder(enabled: Boolean) {
-        if (enabled && Build.VERSION.SDK_INT >= 33 &&
-            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-        ) {
-            permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-        } else {
-            vm.setReminderEnabled(enabled, context)
-        }
-    }
+    val restAlerts = rememberNotificationAccess(TimerNotifier.CHANNEL_ID)
+    val workoutAlerts = rememberNotificationAccess(WorkoutReminderNotifier.CHANNEL_ID)
 
     fun pickTime(currentTimeStr: String, onSelected: (String) -> Unit) {
         val parts = currentTimeStr.split(":")
@@ -413,9 +510,99 @@ fun ProfileScreen(
         ).show()
     }
 
-    val decodedBitmap = rememberAvatarBitmap(vm.profile.avatarUrl)
+    val account = (context.applicationContext as DenTrainApp).container
+    val decodedBitmap = account.profileAvatar?.bitmap?.collectAsStateWithLifecycle()?.value
 
     var viewingAthleteClubDetails by remember { mutableStateOf(false) }
+    var choosingClub by remember { mutableStateOf(false) }
+    val hasClub = !vm.profile.clubId.isNullOrBlank()
+    LaunchedEffect(hasClub) {
+        if (hasClub) choosingClub = false
+    }
+    if (choosingClub && !hasClub) {
+        var selectedClubId by remember { mutableStateOf<String?>(null) }
+        val selectedClub = vm.availableClubs.firstOrNull { it.id == selectedClubId }
+        val busy = vm.loadingAvailableClubs || vm.joiningClub
+        val clubShape = RoundedCornerShape(14.dp)
+        AlertDialog(
+            onDismissRequest = { if (!vm.joiningClub) choosingClub = false },
+            shape = RoundedCornerShape(20.dp),
+            containerColor = DenTrainPalette.Panel,
+            title = { Text("Выберите клуб", fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    when {
+                        busy -> Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator()
+                        }
+                        vm.availableClubs.isNotEmpty() -> LazyColumn(
+                            modifier = Modifier.heightIn(max = 280.dp).selectableGroup(),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            items(vm.availableClubs, key = { it.id }) { club ->
+                                val selected = club.id == selectedClubId
+                                Row(
+                                    modifier = Modifier.fillMaxWidth()
+                                        .clip(clubShape)
+                                        .background(DenTrainPalette.RaisedPanel)
+                                        .border(
+                                            1.dp,
+                                            if (selected) DenTrainPalette.Lime else DenTrainPalette.SubtleBorder,
+                                            clubShape
+                                        )
+                                        .selectable(
+                                            selected = selected,
+                                            role = Role.RadioButton,
+                                            onClick = { selectedClubId = club.id }
+                                        )
+                                        .heightIn(min = 48.dp)
+                                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    RadioButton(selected = selected, onClick = null)
+                                    Column(Modifier.weight(1f)) {
+                                        Text(club.name, color = Color.White, fontWeight = FontWeight.Bold)
+                                        if (club.address.isNotBlank()) {
+                                            Text(club.address, color = DenTrainPalette.MutedText)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        vm.clubSelectionError == null -> Text("Нет доступных клубов")
+                    }
+                    vm.clubSelectionError?.let {
+                        ErrorText(it)
+                        TextButton(onClick = vm::loadAvailableClubs) { Text("Обновить список") }
+                    }
+                }
+            },
+            confirmButton = {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Button(
+                        onClick = { selectedClub?.let(vm::joinClub) },
+                        enabled = selectedClub != null && !busy,
+                        contentPadding = PaddingValues(horizontal = 12.dp)
+                    ) {
+                        Text("Подтвердить")
+                    }
+                    TextButton(
+                        onClick = { choosingClub = false },
+                        enabled = !vm.joiningClub,
+                        colors = ButtonDefaults.textButtonColors(contentColor = Color.White),
+                        contentPadding = PaddingValues(horizontal = 8.dp)
+                    ) {
+                        Text("Закрыть")
+                    }
+                }
+            }
+        )
+    }
     var viewingUserAccount by remember { mutableStateOf<AdminUserModel?>(null) }
     var showDetachTrainer by remember { mutableStateOf(false) }
     var showLogout by remember { mutableStateOf(false) }
@@ -455,6 +642,7 @@ fun ProfileScreen(
             confirmText = "Открепиться",
             onConfirm = {
                 showDetachTrainer = false
+                viewingUserAccount = null
                 vm.detachTrainer()
             },
             onDismiss = { showDetachTrainer = false }
@@ -501,10 +689,12 @@ fun ProfileScreen(
         UserProfilePanel(
             user = user,
             onBack = { viewingUserAccount = null },
-            onSelectTrainer = { trainer ->
-                vm.requestTrainer(trainer)
-                viewingUserAccount = null
-            },
+            onSelectTrainer = vm::requestTrainer,
+            onDetachTrainer = if (user.uid == vm.profile.trainerUid) {
+                { showDetachTrainer = true }
+            } else null,
+            hasPendingTrainerRequest = vm.pendingTrainerRequests.any { it.trainerUid == user.uid },
+            isSendingTrainerRequest = vm.isSaving,
             onWorkoutClick = { selectedWorkout = it },
             currentUserId = currentUserId,
             viewerRole = vm.profile.role,
@@ -813,20 +1003,33 @@ fun ProfileScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("Мой Фитнес-Клуб", fontWeight = FontWeight.Bold, color = Color.White, fontSize = 16.sp)
-                        if (vm.profile.clubName != null) {
+                        Text(
+                            "Мой Фитнес-Клуб",
+                            Modifier.weight(1f).padding(end = 8.dp),
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White,
+                            fontSize = 16.sp
+                        )
+                        if (hasClub) {
                             OutlinedButton(onClick = { viewingAthleteClubDetails = true }) {
                                 Text("Подробнее", color = Color.White)
+                            }
+                        } else {
+                            OutlinedButton(onClick = {
+                                vm.loadAvailableClubs()
+                                choosingClub = true
+                            }, border = BorderStroke(1.dp, Color.White)) {
+                                Text("Вступить", color = Color.White)
                             }
                         }
                     }
                     Spacer(Modifier.height(12.dp))
-                    if (vm.profile.clubName != null) {
+                    if (hasClub) {
                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Filled.Business, null, tint = Color(0xFF2196F3))
                             Spacer(Modifier.size(12.dp))
                             Text(
-                                vm.profile.clubName!!,
+                                vm.profile.clubName ?: "Мой клуб",
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 18.sp,
                                 color = Color.White
@@ -835,17 +1038,37 @@ fun ProfileScreen(
                     } else {
                         Text("Клуб не выбран", color = DenTrainPalette.MutedText, fontSize = 15.sp)
                     }
-                    vm.profile.trainerName?.let { trainer ->
-                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                            Text("Тренер · $trainer", Modifier.weight(1f), color = DenTrainPalette.MutedText)
-                            TextButton(onClick = { showDetachTrainer = true }) { Text("Открепиться") }
-                        }
+                    vm.profile.trainerUid?.let { trainerUid ->
+                        Spacer(Modifier.height(8.dp))
+                        TrainerProfileLink(
+                            vm = vm,
+                            trainerUid = trainerUid,
+                            prefix = "Тренер ",
+                            fallbackName = vm.profile.trainerName.orEmpty().ifBlank { "Профиль" },
+                            linkColor = Color.White,
+                            onOpen = { viewingUserAccount = it }
+                        )
                     }
                     if (vm.profile.trainerUid == null) {
                         vm.pendingTrainerRequests.forEach { request ->
-                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                                Text("Ожидает ответа · ${request.trainerName}", Modifier.weight(1f), color = DenTrainPalette.MutedText)
-                                TextButton(onClick = { requestToWithdraw = request }) { Text("Отозвать") }
+                            key(request.trainerUid) {
+                                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                    TrainerProfileLink(
+                                        vm = vm,
+                                        trainerUid = request.trainerUid,
+                                        prefix = "Ожидает ответа от ",
+                                        fallbackName = request.trainerName.ifBlank { "тренера" },
+                                        linkColor = Color(0xFF00BFFF),
+                                        onOpen = { viewingUserAccount = it },
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    TextButton(
+                                        onClick = { requestToWithdraw = request },
+                                        colors = ButtonDefaults.textButtonColors(contentColor = DenTrainPalette.MutedText)
+                                    ) {
+                                        Text("Отозвать", style = MaterialTheme.typography.bodySmall)
+                                    }
+                                }
                             }
                         }
                     }
@@ -909,28 +1132,31 @@ fun ProfileScreen(
                 if (settingsState != null) {
                     SectionTitle("Настройки тренировок")
                     ProfileCard(
-                        border = if (settings.autoRestTimer) BorderStroke(1.dp, Color.White) else BorderStroke(1.dp, DenTrainPalette.SubtleBorder)
+                        border = restAlerts.border(settings.autoRestTimer, Color.Red)
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Column(Modifier.weight(1f)) {
-                                Text("Автозапуск таймера после подхода", fontWeight = FontWeight.Bold, color = Color.White)
-                                Text(
-                                    "Отдых стартует сразу после клика «Сохранить подход».",
-                                    fontSize = 12.sp, color = DenTrainPalette.MutedText
+                        Column {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    Text("Автозапуск таймера после подхода", fontWeight = FontWeight.Bold, color = Color.White)
+                                    Text(
+                                        "Отдых стартует сразу после клика «Сохранить подход».",
+                                        fontSize = 12.sp, color = DenTrainPalette.MutedText
+                                    )
+                                }
+                                Switch(
+                                    checked = settings.autoRestTimer,
+                                    onCheckedChange = { enabled ->
+                                        Haptic.click(context)
+                                        vm.setAutoRest(enabled)
+                                    },
+                                    colors = SwitchDefaults.colors(
+                                        checkedTrackColor = Color.White,
+                                        checkedThumbColor = DenTrainPalette.Panel,
+                                        checkedBorderColor = Color.White
+                                    )
                                 )
                             }
-                            Switch(
-                                checked = settings.autoRestTimer,
-                                onCheckedChange = { enabled ->
-                                    Haptic.click(context)
-                                    vm.setAutoRest(enabled)
-                                },
-                                colors = SwitchDefaults.colors(
-                                    checkedTrackColor = Color.White,
-                                    checkedThumbColor = DenTrainPalette.Panel,
-                                    checkedBorderColor = Color.White
-                                )
-                            )
+                            if (settings.autoRestTimer) LocalAlertSettings(restAlerts)
                         }
                     }
 
@@ -965,14 +1191,14 @@ fun ProfileScreen(
                     Spacer(Modifier.height(16.dp))
 
                     ProfileCard(
-                        border = if (settings.reminderEnabled) BorderStroke(1.dp, Color.White) else BorderStroke(1.dp, DenTrainPalette.SubtleBorder)
+                        border = workoutAlerts.border(settings.reminderEnabled, Color.Red)
                     ) {
                         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Column(Modifier.weight(1f)) {
-                                    Text("Уведомления о тренировках 🏋️‍♂️", fontWeight = FontWeight.Bold, color = Color.White)
+                                    Text("Напоминания о тренировках", fontWeight = FontWeight.Bold, color = Color.White)
                                     Text(
-                                        "Присылает уведомления перед тренировкой.",
+                                        "По выбранным дням, даже без интернета.",
                                         fontSize = 12.sp, color = DenTrainPalette.MutedText
                                     )
                                 }
@@ -980,7 +1206,7 @@ fun ProfileScreen(
                                     checked = settings.reminderEnabled,
                                     onCheckedChange = { enabled ->
                                         Haptic.click(context)
-                                        toggleReminder(enabled)
+                                        vm.setReminderEnabled(enabled)
                                     },
                                     colors = SwitchDefaults.colors(
                                         checkedTrackColor = Color.White,
@@ -990,12 +1216,13 @@ fun ProfileScreen(
                                 )
                             }
 
-                            if (settings.reminderEnabled) {
+                            if (settings.reminderEnabled) LocalAlertSettings(workoutAlerts)
+                            if (settings.reminderEnabled && workoutAlerts.allowed) {
                                 Text("Время начала тренировки:", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color.White)
                                 OutlinedButton(
                                     onClick = {
                                         Haptic.click(context)
-                                        pickTime(settings.workoutStartTime) { time -> vm.setWorkoutStartTime(time, context) }
+                                        pickTime(settings.workoutStartTime, vm::setWorkoutStartTime)
                                     },
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
@@ -1027,7 +1254,7 @@ fun ProfileScreen(
                                                 )
                                                 .clickable {
                                                     Haptic.click(context)
-                                                    vm.toggleScheduledDay(dayNum, context)
+                                                    vm.toggleScheduledDay(dayNum)
                                                 },
                                             contentAlignment = Alignment.Center
                                         ) {
@@ -1063,7 +1290,7 @@ fun ProfileScreen(
                                                 )
                                                 .clickable {
                                                     Haptic.click(context)
-                                                    vm.toggleReminderLeadOption(min, context)
+                                                    vm.toggleReminderLeadOption(min)
                                                 },
                                             contentAlignment = Alignment.Center
                                         ) {

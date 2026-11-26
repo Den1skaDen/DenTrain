@@ -98,6 +98,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DatePicker
+import androidx.compose.material3.DatePickerDefaults
 import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -448,14 +449,21 @@ fun DateField(
         )
         DatePickerDialog(
             onDismissRequest = { show = false },
+            shape = RoundedCornerShape(20.dp),
+            colors = DatePickerDefaults.colors(containerColor = DenTrainPalette.Panel),
             confirmButton = {
                 TextButton(enabled = state.selectedDateMillis != null, onClick = {
                     state.selectedDateMillis?.let { onChange(Math.floorDiv(it, 86_400_000L)) }
                     show = false
-                }) { Text("OK", color = DenTrainPalette.Lime) }
+                }) { Text("Выбрать") }
             },
             dismissButton = { TextButton(onClick = { show = false }) { Text("Отмена", color = DenTrainPalette.MutedText) } }
-        ) { DatePicker(state = state) }
+        ) {
+            DatePicker(
+                state = state,
+                colors = DatePickerDefaults.colors(containerColor = DenTrainPalette.Panel)
+            )
+        }
     }
 }
 
@@ -931,7 +939,10 @@ fun UserProfilePanel(
     athleteHasTrainer: Boolean = false,
     userWorkouts: List<AssignedWorkoutModel> = emptyList(),
     isLoadingWorkouts: Boolean = false,
-    onDetachStudent: (() -> Unit)? = null
+    onDetachStudent: (() -> Unit)? = null,
+    hasPendingTrainerRequest: Boolean = false,
+    isSendingTrainerRequest: Boolean = false,
+    onDetachTrainer: (() -> Unit)? = null
 ) {
     var showDeleteConfirmDialog by remember { mutableStateOf(false) }
     var showDetachConfirm by remember(user.uid) { mutableStateOf(false) }
@@ -975,6 +986,11 @@ fun UserProfilePanel(
             title = if (user.username.isNotBlank()) "@${user.username}" else user.nickname,
             onBack = onBack,
             actions = {
+                if (onDetachTrainer != null) {
+                    TextButton(onClick = onDetachTrainer) {
+                        Text("Открепиться", color = DenTrainPalette.Error)
+                    }
+                }
                 if (onDetachStudent != null) {
                     TextButton(onClick = { showDetachConfirm = true }) {
                         Text("Открепить", color = DenTrainPalette.Error)
@@ -1137,6 +1153,48 @@ fun UserProfilePanel(
                             Text("У вас уже есть тренер", color = Color.Gray, fontWeight = FontWeight.Bold)
                         }
                     }
+                    hasPendingTrainerRequest && onSelectTrainer != null -> {
+                        val accent = Color(0xFF00BFFF)
+                        val shape = RoundedCornerShape(16.dp)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier.weight(1f)
+                                    .background(Color(0xFF1C1E26), shape)
+                                    .dashedBorder(accent, shape, strokeWidth = 1.dp)
+                                    .heightIn(min = 52.dp)
+                                    .padding(8.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    "Заявка отправлена",
+                                    color = accent,
+                                    fontWeight = FontWeight.Bold,
+                                    textAlign = TextAlign.Center
+                                )
+                            }
+                            Box(
+                                modifier = Modifier.weight(1f)
+                                    .clip(shape)
+                                    .background(Color(0xFF1C1E26))
+                                    .border(1.dp, Color.White, shape)
+                                    .clickable(enabled = !isSendingTrainerRequest) { onSelectTrainer(user) }
+                                    .heightIn(min = 52.dp)
+                                    .padding(8.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    "Отправить ещё",
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold,
+                                    textAlign = TextAlign.Center
+                                )
+                            }
+                        }
+                    }
                     onSelectTrainer != null -> {
                         Box(
                             modifier = Modifier
@@ -1144,7 +1202,7 @@ fun UserProfilePanel(
                                 .clip(RoundedCornerShape(16.dp))
                                 .background(Color(0xFF1C1E26))
                                 .border(1.dp, Color(0xFF00BFFF), RoundedCornerShape(16.dp))
-                                .clickable { onSelectTrainer(user) }
+                                .clickable(enabled = !isSendingTrainerRequest) { onSelectTrainer(user) }
                                 .padding(16.dp),
                             contentAlignment = Alignment.Center
                         ) {

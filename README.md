@@ -13,6 +13,29 @@ Kotlin · Jetpack Compose · Room · MVVM · Coroutines/Flow. Работает �
 Если Sync выдаёт ошибку версий, откройте `File → Project Structure → Project` и поставьте Gradle 8.9 / AGP 8.5.2,
 либо обновите версии плагинов в корневом `build.gradle.kts` до тех, что предлагает студия.
 
+## Письма для подтверждения почты
+
+Регистрация и повторная отправка вызывают функцию `sendVerificationEmail`. Она формирует ссылку Firebase Auth для текущего пользователя и отправляет шаблон `firebase-auth/verify-email.html` через Resend с адреса `noreply@mail.dentrain.ru`. Для кнопки используется страница `https://auth.dentrain.ru/verify/`.
+
+### Cloudflare Workers Free без Blaze
+
+Используйте отдельный сервисный аккаунт проекта `dentrain-9af07` с пользовательской ролью, которая содержит только `firebaseauth.users.sendEmail`. В Cloudflare задайте секреты `FIREBASE_EMAIL_SERVICE_ACCOUNT` (JSON ключ этого аккаунта) и `RESEND_API_KEY` (ключ с правом отправки для `mail.dentrain.ru`). Задайте переменную `FIREBASE_WEB_API_KEY` со значением `apiKey` из публичной конфигурации `https://auth.dentrain.ru/__/firebase/init.json`. Для развёртывания используйте конфигурацию `firebase-auth/wrangler.jsonc`.
+
+Android по умолчанию обращается к `https://dentrain-email-verification.dorov-thletics.workers.dev/sendVerificationEmail`. Для другого Worker передайте его полный HTTPS-адрес с путём `/sendVerificationEmail` через Gradle-свойство `denTrainVerificationEndpoint`. Проверьте доставку при регистрации и повторной отправке, затем перейдите по ссылке из письма и убедитесь, что приложение видит подтверждённую почту.
+
+Сброс пароля использует маршрут `/sendPasswordResetEmail` этого Worker и шаблон `firebase-auth/reset-password.html`. Он использует те же секреты Firebase и Resend. Для отдельного адреса Worker задайте `denTrainPasswordResetEndpoint` полным HTTPS-адресом с путём `/sendPasswordResetEmail`. При использовании Cloud Functions для подтверждения почты сброс пароля по умолчанию продолжает работать через Cloudflare Worker.
+
+### Cloud Functions на Blaze
+
+Перед выпуском Android-сборки проверьте, что на проекте `dentrain-9af07` включён Blaze, домен `mail.dentrain.ru` подтверждён в Resend, а обработчик `/verify/` доступен на `auth.dentrain.ru`. Сохраните ключ Resend с правом отправки для этого домена в Secret Manager, затем разверните функцию.
+
+```powershell
+firebase functions:secrets:set RESEND_API_KEY --project dentrain-9af07
+firebase deploy --only functions:email-verification --project dentrain-9af07
+```
+
+Для этой схемы соберите Android с пустым свойством `-PdenTrainVerificationEndpoint=`.
+
 ## Структура проекта (`app/src/main/java/com/dentrain`)
 | Файл / папка | Назначение |
 |---|---|

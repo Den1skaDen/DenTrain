@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.dentrain",
+      "sha256_cert_fingerprints": [
+        "A4:15:BD:34:E8:AD:A0:F3:A3:C5:3C:17:17:FD:CE:B0:79:02:C7:C1:EC:0D:84:35:EF:FA:35:E4:CD:C4:D1:22"
+      ]
+    }
+  }
+]

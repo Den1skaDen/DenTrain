@@ -4,9 +4,12 @@ import com.dentrain.util.userMessage
 import com.dentrain.ui.components.launchUserAction
 import com.dentrain.ui.components.OperationErrorDialog
 import com.dentrain.ui.theme.DenTrainPalette
-import com.airbnb.lottie.compose.LottieAnimation
-import com.airbnb.lottie.compose.LottieCompositionSpec
-import com.airbnb.lottie.compose.rememberLottieComposition
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import androidx.compose.ui.res.painterResource
+import androidx.core.content.ContextCompat
 import com.dentrain.R
 import androidx.compose.foundation.Image
 import androidx.compose.ui.graphics.asImageBitmap
@@ -142,7 +145,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import com.dentrain.ui.components.rememberAvatarBitmap
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.callbackFlow
 import com.dentrain.data.WorkoutDelivery
@@ -154,6 +156,7 @@ import java.time.Instant
 import java.time.ZoneId
 import androidx.compose.material3.TextButton
 import java.time.LocalDate
+import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 import kotlin.math.abs
@@ -333,7 +336,7 @@ fun WorkoutHomeScreen(
                     if (snapshot != null && snapshot.exists()) {
                         val nickname = snapshot.getString("nickname")
                         if (!nickname.isNullOrBlank()) userName = nickname
-                        userAvatarUrl = snapshot.getString("avatarUrl") ?: snapshot.getString("avatarBase64")
+                        userAvatarUrl = snapshot.getString("avatarUrl")?.takeIf { it.startsWith("http") }
                     }
                     if (snapshot != null) {
                         canReceiveRequests = snapshot.getString("role") in setOf("trainer", "admin")
@@ -356,8 +359,7 @@ fun WorkoutHomeScreen(
         onDispose { requests?.remove() }
     }
 
-    val avatarSource = userAvatarUrl
-    val decodedAvatar = rememberAvatarBitmap(avatarSource)
+    val decodedAvatar = account.profileAvatar?.bitmap?.collectAsStateWithLifecycle()?.value
 
     var deleteId by remember { mutableStateOf<Long?>(null) }
 
@@ -437,7 +439,7 @@ fun WorkoutHomeScreen(
                             ) {
                                 // Avatar placeholder or actual image
                                 val avatarModifier = Modifier.size(48.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surfaceVariant)
-                                if (!userAvatarUrl.isNullOrBlank() && userAvatarUrl!!.startsWith("http")) {
+                                if (decodedAvatar == null && userAvatarUrl != null) {
                                     AsyncImage(
                                         model = userAvatarUrl,
                                         contentDescription = "Profile",
@@ -460,19 +462,7 @@ fun WorkoutHomeScreen(
                                 Spacer(Modifier.width(12.dp))
 
                                 Column(modifier = Modifier.weight(1f)) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Text(
-                                            "Good Morning",
-                                            modifier = Modifier.weight(1f, fill = false),
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                        val sun by rememberLottieComposition(LottieCompositionSpec.RawRes(R.raw.greeting_sun))
-                                        LottieAnimation(
-                                            composition = sun,
-                                            modifier = Modifier.padding(start = 4.dp).size(22.dp)
-                                        )
-                                    }
+                                    ProfileGreeting()
                                     Text(
                                         text = userName,
                                         fontWeight = FontWeight.ExtraBold,
@@ -763,6 +753,47 @@ fun WorkoutHomeScreen(
 }
 
 private val calendarDateFormat = DateTimeFormatter.ofPattern("d\u00A0MMMM", Locale.forLanguageTag("ru"))
+
+@Composable
+private fun ProfileGreeting() {
+    val context = LocalContext.current
+    var isEvening by remember { mutableStateOf(isEveningGreeting()) }
+
+    DisposableEffect(context) {
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                isEvening = isEveningGreeting()
+            }
+        }
+        val filter = IntentFilter(Intent.ACTION_TIME_TICK).apply {
+            addAction(Intent.ACTION_TIME_CHANGED)
+            addAction(Intent.ACTION_TIMEZONE_CHANGED)
+        }
+        ContextCompat.registerReceiver(context, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+        isEvening = isEveningGreeting()
+        onDispose { context.unregisterReceiver(receiver) }
+    }
+
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            text = if (isEvening) "Good Evening" else "Good Morning",
+            modifier = Modifier.weight(1f, fill = false),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Icon(
+            painter = painterResource(if (isEvening) R.drawable.ic_lucide_moon else R.drawable.ic_lucide_sun),
+            contentDescription = null,
+            modifier = Modifier.padding(start = 4.dp).size(18.dp),
+            tint = if (isEvening) Color.White else Color(0xFFFFC750)
+        )
+    }
+}
+
+private fun isEveningGreeting(): Boolean {
+    val hour = LocalTime.now().hour
+    return hour >= 17 || hour < 6
+}
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable

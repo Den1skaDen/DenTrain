@@ -1,6 +1,8 @@
 package com.dentrain.ui.navigation
 
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
@@ -12,6 +14,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -49,6 +53,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -103,9 +108,17 @@ private const val ROUTE_TRAINER = "trainer"
 private const val ROUTE_TRAINER_REQUESTS = "trainer/requests"
 
 @Composable
-fun AppNav(startAtHome: Boolean, loginLogoModifier: Modifier = Modifier) {
+internal fun AppNav(
+    startAtHome: Boolean,
+    showLoginLogo: Boolean,
+    onLoginLogoPositioned: (Rect) -> Unit,
+    onAuthTransition: (Rect?, suspend () -> Unit) -> Unit,
+    onSignedOut: () -> Unit,
+    blockMain: Boolean
+) {
     val nav = rememberNavController()
-    val currentLoginLogoModifier by rememberUpdatedState(loginLogoModifier)
+    val authOverlayActive = LocalSplashActive.current
+    val skipNavFade by rememberUpdatedState(authOverlayActive)
     val entry by nav.currentBackStackEntryAsState()
     val currentRoute = entry?.destination?.route
     val isMainTabs = currentRoute == ROUTE_MAIN || (currentRoute == null && startAtHome)
@@ -128,7 +141,7 @@ fun AppNav(startAtHome: Boolean, loginLogoModifier: Modifier = Modifier) {
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
-        contentWindowInsets = WindowInsets(0),
+        contentWindowInsets = WindowInsets.navigationBars.only(WindowInsetsSides.Bottom),
         bottomBar = {
             if (isMainTabs) {
                 Box(
@@ -187,15 +200,18 @@ fun AppNav(startAtHome: Boolean, loginLogoModifier: Modifier = Modifier) {
             startDestination = if (startAtHome) ROUTE_MAIN else ROUTE_AUTH,
             modifier = Modifier
                 .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal))
-                .padding(bottom = pad.calculateBottomPadding()),
-            enterTransition = { fadeIn(tween(220)) },
-            exitTransition = { fadeOut(tween(180)) },
+                .padding(bottom = pad.calculateBottomPadding())
+                .consumeWindowInsets(pad),
+            enterTransition = { if (skipNavFade) EnterTransition.None else fadeIn(tween(220)) },
+            exitTransition = { if (skipNavFade) ExitTransition.None else fadeOut(tween(180)) },
             popEnterTransition = { fadeIn(tween(220)) },
             popExitTransition = { fadeOut(tween(180)) }
         ) {
             composable(ROUTE_AUTH) {
                 AuthScreen(
-                    logoModifier = currentLoginLogoModifier,
+                    showLogo = showLoginLogo,
+                    onLoginLogoPositioned = onLoginLogoPositioned,
+                    onAuthTransition = onAuthTransition,
                     onAuthSuccess = {
                         pagerState.requestScrollToPage(Tab.Home.ordinal)
                         nav.navigate(ROUTE_MAIN) {
@@ -207,7 +223,7 @@ fun AppNav(startAtHome: Boolean, loginLogoModifier: Modifier = Modifier) {
 
             composable(ROUTE_MAIN) {
                 val tabAccount = app.container
-                if (tabAccount.uid == null) return@composable
+                if (tabAccount.uid == null || blockMain) return@composable
                 key(tabAccount) {
                     val history = appViewModel { HistoryViewModel(it.repository, it.screenCache) }
                     val records = appViewModel { RecordsViewModel(it.repository, it.screenCache) }
@@ -253,12 +269,7 @@ fun AppNav(startAtHome: Boolean, loginLogoModifier: Modifier = Modifier) {
                                 )
                                 2 -> RecordsScreen(vm = records, onSettings = { nav.navigate(ROUTE_SETTINGS) })
                                 3 -> ProfileScreen(
-                                    onLogout = {
-                                        nav.navigate(ROUTE_AUTH) {
-                                            popUpTo(ROUTE_MAIN) { inclusive = true }
-                                            launchSingleTop = true
-                                        }
-                                    },
+                                    onLogout = onSignedOut,
                                     onOpenAdmin = { nav.navigate(ROUTE_ADMIN) },
                                     onOpenTrainer = { nav.navigate(ROUTE_TRAINER) },
                                     onOpenSettings = { nav.navigate(ROUTE_SETTINGS) }

@@ -12,7 +12,7 @@ import androidx.activity.compose.BackHandler
 import com.dentrain.ui.components.EditorTextField
 import com.dentrain.ui.theme.DenTrainPalette
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -84,6 +84,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.ViewModel
@@ -413,9 +414,19 @@ fun WorkoutEditorScreen(workoutId: Long, onBack: () -> Unit) {
 
         val tfShape = RoundedCornerShape(12.dp)
 
+        val exercisePlacement = remember {
+            tween<IntOffset>(durationMillis = 400, easing = FastOutSlowInEasing)
+        }
+        val exerciseEnter = remember {
+            tween<Float>(durationMillis = 340, delayMillis = 60, easing = FastOutSlowInEasing)
+        }
+        val exerciseExit = remember {
+            tween<Float>(durationMillis = 320, easing = FastOutSlowInEasing)
+        }
+
         LazyColumn(
             state = listState,
-            modifier = Modifier.padding(pad).fillMaxSize().animateContentSize(),
+            modifier = Modifier.padding(pad).fillMaxSize(),
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
@@ -520,7 +531,11 @@ fun WorkoutEditorScreen(workoutId: Long, onBack: () -> Unit) {
                 val nameFocus = nameFocusRequesters.getOrPut(e.uid) { FocusRequester() }
                 val setsFocus = setsFocusRequesters.getOrPut(e.uid) { FocusRequester() }
 
-                EditorCard {
+                EditorCard(modifier = Modifier.animateItem(
+                    fadeInSpec = exerciseEnter,
+                    placementSpec = exercisePlacement,
+                    fadeOutSpec = exerciseExit
+                )) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -726,9 +741,10 @@ fun WorkoutEditorScreen(workoutId: Long, onBack: () -> Unit) {
             }
 
             // Кнопка добавить упражнение
-            item {
+            item(key = "add_exercise") {
                 Box(
                     modifier = Modifier
+                        .animateItem(placementSpec = exercisePlacement)
                         .fillMaxWidth()
                         .heightIn(min = 54.dp)
                         .clip(RoundedCornerShape(16.dp))
@@ -754,7 +770,8 @@ fun WorkoutEditorScreen(workoutId: Long, onBack: () -> Unit) {
             }
 
             // Кнопка сохранить
-            item {
+            item(key = "save_workout") {
+                Column(Modifier.animateItem(placementSpec = exercisePlacement)) {
                 ErrorText(vm.error, Modifier.padding(bottom = 8.dp))
                 Button(
                     onClick = {
@@ -787,6 +804,7 @@ fun WorkoutEditorScreen(workoutId: Long, onBack: () -> Unit) {
                         fontSize = 16.sp,
                         color = Color.Black
                     )
+                }
                 }
             }
         }

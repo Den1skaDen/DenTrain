@@ -7,6 +7,7 @@ import com.dentrain.DenTrainApp
 
 class TimerAlarmReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
-        (context.applicationContext as DenTrainApp).container.restTimer.onAlarm()
+        val deadline = intent?.getLongExtra(RestTimer.EXTRA_DEADLINE, 0L) ?: return
+        (context.applicationContext as DenTrainApp).container.restTimer.onAlarm(deadline)
     }
 }

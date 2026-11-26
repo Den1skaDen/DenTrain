@@ -11,6 +11,7 @@ import com.dentrain.ui.theme.DenTrainPalette
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -32,8 +33,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.InlineTextContent
+import androidx.compose.foundation.text.appendInlineContent
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import com.dentrain.ui.icons.filled.Business
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
@@ -51,6 +55,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRowDefaults
@@ -66,17 +71,21 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.Placeholder
+import androidx.compose.ui.text.PlaceholderVerticalAlign
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -808,12 +817,30 @@ fun AdminScreen(onBack: () -> Unit) {
 
 @Composable
 private fun AdminAuditList(vm: AdminViewModel, onOpenProfile: (AdminUserModel) -> Unit) {
-    val timestampFormat = remember { DateTimeFormatter.ofPattern("dd.MM.yyyy · HH:mm").withZone(ZoneId.systemDefault()) }
+    val timestampFormat = remember { DateTimeFormatter.ofPattern("dd.MM.yyyy | HH:mm").withZone(ZoneId.systemDefault()) }
+    val timestampShape = RoundedCornerShape(6.dp)
+    val roleTransitionIcons = remember {
+        mapOf("role-transition-arrow" to InlineTextContent(
+            Placeholder(1.em, 1.em, PlaceholderVerticalAlign.TextCenter)
+        ) {
+            Icon(Icons.AutoMirrored.Filled.ArrowBack, null, Modifier.fillMaxSize().rotate(180f), tint = Color.White)
+        })
+    }
     val usersById = remember(vm.users) { vm.users.associateBy { it.uid } }
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text("Последние $ADMIN_AUDIT_LIMIT событий", Modifier.weight(1f), color = DenTrainPalette.MutedText)
-            TextButton(onClick = vm::loadAudit, enabled = !vm.isLoadingAudit) { Text("Обновить") }
+            OutlinedButton(
+                onClick = vm::loadAudit,
+                enabled = !vm.isLoadingAudit,
+                border = BorderStroke(1.dp, Color.White),
+                colors = ButtonDefaults.outlinedButtonColors(
+                    contentColor = Color.White,
+                    disabledContentColor = Color.White
+                )
+            ) {
+                Text("Обновить")
+            }
         }
         if (vm.isLoadingAudit) {
             CircularProgressIndicator(Modifier.align(Alignment.CenterHorizontally))
@@ -834,31 +861,60 @@ private fun AdminAuditList(vm: AdminViewModel, onOpenProfile: (AdminUserModel) -
                 val timestamp = entry["occurredAt"] as? com.google.firebase.Timestamp
                 val actorId = (entry["actorUid"] as? String).orEmpty()
                 val targetId = (entry["targetId"] as? String).orEmpty()
-                val actor = usersById[actorId]?.nickname ?: actorId
+                val actor = usersById[actorId]
+                val actorRole = actor?.role?.let(::auditRoleName) ?: "Роль неизвестна"
+                val actorNickname = actor?.nickname?.trim()?.trimStart('@')?.takeIf { it.isNotBlank() }
+                val actorLabel = when {
+                    actorNickname != null -> "$actorRole (@$actorNickname)"
+                    actorId.isNotBlank() -> "$actorRole ($actorId)"
+                    else -> "Автор неизвестен"
+                }
                 val targetProfile = when (entry["action"]) {
                     "role_changed", "trainer_changed", "access_changed", "workout_assigned" -> usersById[targetId]
                     else -> null
                 }
-                val target = targetProfile?.nickname ?: targetId
                 val label = entry["label"] as? String ?: ""
+                val targetLabel = when (entry["action"]) {
+                    "club_deleted" -> "Клуб"
+                    "workout_assigned" -> "Получатель"
+                    else -> "Профиль"
+                }
+                val isDeletion = entry["action"] in setOf("profile_deleted", "club_deleted")
+                val targetName = if (isDeletion) label else targetProfile?.nickname.orEmpty()
+                val target = targetName.ifBlank { targetId }
                 Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
-                    .background(DenTrainPalette.RaisedPanel).padding(12.dp)) {
-                    Text(action, color = Color.White, fontWeight = FontWeight.Bold)
+                    .background(DenTrainPalette.RaisedPanel).padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.Top
+                    ) {
+                        Text(action, Modifier.weight(1f), color = Color.White, fontWeight = FontWeight.Bold)
+                        timestamp?.let {
+                            Text(
+                                timestampFormat.format(it.toDate().toInstant()),
+                                Modifier.border(1.dp, DenTrainPalette.MutedText, timestampShape)
+                                    .padding(horizontal = 6.dp, vertical = 3.dp),
+                                color = DenTrainPalette.MutedText,
+                                fontSize = 12.sp,
+                                maxLines = 1
+                            )
+                        }
+                    }
                     if (entry["action"] in listOf("role_changed", "access_changed")) {
-                        Text(auditRoleTransition(label), color = Color.White)
-                    } else {
+                        Text(auditRoleTransition(label), color = Color.White, inlineContent = roleTransitionIcons)
+                    } else if (!isDeletion) {
                         Text(label, color = Color.White)
                     }
-                    Text("Кто · $actor", color = DenTrainPalette.MutedText, fontSize = 12.sp)
+                    Text("Изменил: $actorLabel", color = DenTrainPalette.MutedText, fontSize = 12.sp)
                     if (targetProfile != null) {
                         TextButton(onClick = { onOpenProfile(targetProfile) }) {
-                            Text("Объект · $target")
+                            Text("$targetLabel: $target")
                         }
-                    } else {
-                        Text("Объект · $target", color = DenTrainPalette.MutedText, fontSize = 12.sp)
-                    }
-                    timestamp?.let {
-                        Text(timestampFormat.format(it.toDate().toInstant()), color = DenTrainPalette.MutedText, fontSize = 12.sp)
+                    } else if (target.isNotBlank()) {
+                        Text("$targetLabel: $target", color = DenTrainPalette.MutedText, fontSize = 12.sp)
                     }
                 }
             }
@@ -866,22 +922,36 @@ private fun AdminAuditList(vm: AdminViewModel, onOpenProfile: (AdminUserModel) -
     }
 }
 
+private fun auditRoleName(role: String) = when (role) {
+    "athlete" -> "Пользователь"
+    "trainer" -> "Тренер"
+    "admin" -> "Администратор"
+    else -> role
+}
+
+private val auditRoleSeparator = Regex("""\s*(?:→|->|['’´‘]n)\s*""")
+
 private fun auditRoleTransition(label: String) = buildAnnotatedString {
     val roleAndDetails = label.split(" · ", limit = 2)
-    val roles = roleAndDetails.first().split(" → ", limit = 2)
+    val roles = roleAndDetails.first().split(auditRoleSeparator, limit = 2)
     if (roles.size != 2) {
         append(label)
         return@buildAnnotatedString
     }
     roles.forEachIndexed { index, role ->
-        if (index == 1) append(" → ")
-        val (name, color) = when (role) {
-            "athlete" -> "Пользователь" to Color.White
-            "trainer" -> "Тренер" to Color(0xFF64B5F6)
-            "admin" -> "Администратор" to Color(0xFFFFD54F)
-            else -> role to Color.White
+        if (index == 1) {
+            append(" ")
+            appendInlineContent("role-transition-arrow", "→")
+            append(" ")
         }
-        withStyle(SpanStyle(color = color, fontWeight = FontWeight.Bold)) { append(name) }
+        val color = when (role) {
+            "trainer" -> Color(0xFF64B5F6)
+            "admin" -> Color(0xFFFFD54F)
+            else -> Color.White
+        }
+        withStyle(SpanStyle(color = color, fontWeight = FontWeight.Bold)) {
+            append(auditRoleName(role).ifBlank { "Без роли" })
+        }
     }
     roleAndDetails.getOrNull(1)?.let { append("\n$it") }
 }

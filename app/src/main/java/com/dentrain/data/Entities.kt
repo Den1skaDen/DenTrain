@@ -73,7 +73,10 @@ data class SetResultEntity(
     val weight: Double? = null,
     val isTimeBased: Boolean = false, // true = секунды, false = повторения
     val isWarmup: Boolean = false,    // true = разминочный подход (не учитывается в рекордах и прогрессе)
-    val completedAt: Long = System.currentTimeMillis()
+    val completedAt: Long = System.currentTimeMillis(),
+    val isPersonalRecord: Boolean? = null, // null = подход из старой версии дневника
+    val previousRecordWeight: Double? = null,
+    val previousRecordReps: Int? = null
 )
 
 

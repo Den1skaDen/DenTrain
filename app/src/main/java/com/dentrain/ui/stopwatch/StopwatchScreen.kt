@@ -1,11 +1,6 @@
 package com.dentrain.ui.stopwatch
 
-import android.Manifest
-import android.content.pm.PackageManager
-import android.os.Build
 import android.os.SystemClock
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.SizeTransform
@@ -98,7 +93,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -112,6 +106,9 @@ import com.dentrain.timer.StopwatchLap
 import com.dentrain.timer.StopwatchTimer
 import com.dentrain.timer.TimerState
 import com.dentrain.ui.components.appViewModel
+import com.dentrain.ui.components.LocalAlertSettings
+import com.dentrain.ui.components.rememberNotificationAccess
+import com.dentrain.timer.TimerNotifier
 import com.dentrain.ui.theme.DenTrainPalette
 import com.dentrain.util.Fmt
 import kotlinx.coroutines.flow.first
@@ -266,26 +263,15 @@ private fun RestTimerContent(vm: StopwatchViewModel) {
     val running by remember(current) { derivedStateOf { current.value.running } }
     val canResume by remember(current) { derivedStateOf { current.value.remainingMs in 1 until current.value.totalMs } }
     val total by remember(current) { derivedStateOf { current.value.totalMs } }
-    val context = LocalContext.current
-    val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { vm.startRest() }
-
-    fun start() {
-        val state = current.value
-        val needsPermission = Build.VERSION.SDK_INT >= 33 &&
-            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-        if (needsPermission && state.remainingMs == state.totalMs) {
-            permission.launch(Manifest.permission.POST_NOTIFICATIONS)
-        } else {
-            vm.startRest()
-        }
-    }
+    val alerts = rememberNotificationAccess(TimerNotifier.CHANNEL_ID)
 
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
         DialCard(dial = { RestDial(current) }) {
-            StartButton(running, canResume, Modifier.weight(1f)) { if (running) vm.pauseRest() else start() }
+            StartButton(running, canResume, Modifier.weight(1f)) { if (running) vm.pauseRest() else vm.startRest() }
             TimerButton("Сброс", vm::resetRest, Modifier.weight(1f), icon = Icons.Filled.Refresh)
         }
         RestDurationCard(total, vm::selectRest)
+        LocalAlertSettings(alerts)
     }
 }
 

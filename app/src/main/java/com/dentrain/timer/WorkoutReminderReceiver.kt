@@ -1,30 +1,28 @@
 package com.dentrain.timer
 
+import android.app.AlarmManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import com.dentrain.DenTrainApp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
-/**
- * Приёмник напоминания о тренировке.
- */
 class WorkoutReminderReceiver : BroadcastReceiver() {
-    override fun onReceive(context: Context, intent: Intent?) {
-        CoroutineScope(Dispatchers.IO).launch {
-            val db = (context.applicationContext as com.dentrain.DenTrainApp).container.database
-            val settings = db.settingsDao().getOnce()
-
-            if (settings != null && settings.reminderEnabled) {
-                WorkoutReminderNotifier.ensureChannel(context)
-                WorkoutReminderNotifier.sendReminder(
-                    context,
-                    "Напоминание о тренировке 🏋️‍♂️",
-                    "Через час запланированная тренировка, приходи!"
-                )
+    override fun onReceive(context: Context, intent: Intent) {
+        if (intent.action == AlarmManager.ACTION_SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED) {
+            (context.applicationContext as DenTrainApp).container.restTimer.reschedule()
+        }
+        val pending = goAsync()
+        CoroutineScope(Dispatchers.Main.immediate).launch {
+            try {
+                WorkoutReminderScheduler.sync(context, intent.takeIf {
+                    it.action == WorkoutReminderScheduler.ACTION_REMINDER
+                })
+            } finally {
+                pending.finish()
             }
-            WorkoutReminderScheduler.sync(context)
         }
     }
 }

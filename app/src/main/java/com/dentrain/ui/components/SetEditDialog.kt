@@ -2,7 +2,6 @@ package com.dentrain.ui.components
 
 import com.dentrain.ui.theme.DenTrainPalette
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -13,10 +12,15 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -42,6 +46,7 @@ import com.dentrain.util.Fmt
 @Composable
 fun SetEditDialog(
     set: SetResultEntity,
+    swapWeightReps: Boolean = false,
     onSave: (reps: Int, weight: Double?, isWarmup: Boolean) -> Unit,
     onDelete: () -> Unit,
     onDismiss: () -> Unit
@@ -57,6 +62,8 @@ fun SetEditDialog(
     val fieldColors = OutlinedTextFieldDefaults.colors(
         focusedBorderColor = accent,
         focusedLabelColor = accent,
+        focusedContainerColor = Color.Transparent,
+        unfocusedContainerColor = Color.Transparent,
         unfocusedBorderColor = DenTrainPalette.Border,
         unfocusedLabelColor = DenTrainPalette.MutedText,
         cursorColor = accent
@@ -64,8 +71,16 @@ fun SetEditDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(20.dp),
         containerColor = DenTrainPalette.Panel,
-        title = { Text("Изменить подход", color = Color.White, fontWeight = FontWeight.Bold) },
+        title = {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("Изменить подход", modifier = Modifier.weight(1f), color = Color.White, fontWeight = FontWeight.Bold)
+                IconButton(onClick = onDelete) {
+                    Icon(Icons.Filled.Delete, contentDescription = "Удалить подход", tint = DenTrainPalette.Error)
+                }
+            }
+        },
         text = {
             Column {
                 Row(
@@ -79,7 +94,6 @@ fun SetEditDialog(
                         modifier = Modifier
                             .weight(1f)
                             .clip(CircleShape)
-                            .background(if (!isWarmup) DenTrainPalette.Lime.copy(alpha = 0.2f) else DenTrainPalette.RaisedPanel)
                             .border(BorderStroke(1.dp, if (!isWarmup) DenTrainPalette.Lime else DenTrainPalette.Border), CircleShape)
                             .clickable { isWarmup = false }
                             .padding(vertical = 8.dp),
@@ -89,7 +103,7 @@ fun SetEditDialog(
                             text = "Рабочий",
                             fontSize = 13.sp,
                             fontWeight = FontWeight.Bold,
-                            color = if (!isWarmup) DenTrainPalette.Lime else DenTrainPalette.MutedText
+                            color = Color.White
                         )
                     }
 
@@ -97,7 +111,6 @@ fun SetEditDialog(
                         modifier = Modifier
                             .weight(1f)
                             .clip(CircleShape)
-                            .background(if (isWarmup) blueAccent.copy(alpha = 0.2f) else DenTrainPalette.RaisedPanel)
                             .border(BorderStroke(1.dp, if (isWarmup) blueAccent else DenTrainPalette.Border), CircleShape)
                             .clickable { isWarmup = true }
                             .padding(vertical = 8.dp),
@@ -107,47 +120,57 @@ fun SetEditDialog(
                             text = "Разминка",
                             fontSize = 13.sp,
                             fontWeight = FontWeight.Bold,
-                            color = if (isWarmup) blueAccent else DenTrainPalette.MutedText
+                            color = Color.White
                         )
                     }
                 }
 
-                Row {
-                    OutlinedTextField(
-                        value = reps, onValueChange = { reps = it.filter(Char::isDigit).take(4) },
-                        label = { Text(if (set.isTimeBased) "Секунды" else "Повторения") }, singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = fieldColors
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    OutlinedTextField(
-                        value = weight, onValueChange = { weight = it.filter { c -> c.isDigit() || c == ',' || c == '.' }.take(7) },
-                        label = { Text("Вес, кг") }, singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                        modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = fieldColors
-                    )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val repsField: @Composable () -> Unit = {
+                        OutlinedTextField(
+                            value = reps, onValueChange = { reps = it.filter(Char::isDigit).take(4) },
+                            label = { Text(if (set.isTimeBased) "Секунды" else "Повторения") }, singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = fieldColors
+                        )
+                    }
+                    val weightField: @Composable () -> Unit = {
+                        OutlinedTextField(
+                            value = weight, onValueChange = { weight = it.filter { c -> c.isDigit() || c == ',' || c == '.' }.take(7) },
+                            label = { Text("Вес, кг") }, singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = fieldColors
+                        )
+                    }
+                    if (swapWeightReps) {
+                        weightField()
+                        repsField()
+                    } else {
+                        repsField()
+                        weightField()
+                    }
                 }
                 Spacer(Modifier.height(8.dp))
                 ErrorText(error)
-                TextButton(onClick = onDelete, modifier = Modifier.fillMaxWidth()) {
-                    Text("Удалить этот подход", color = androidx.compose.material3.MaterialTheme.colorScheme.error)
-                }
             }
         },
         confirmButton = {
-            TextButton(onClick = {
-                val r = reps.toIntOrNull()
-                val w = if (weight.isBlank()) null else Fmt.parseWeight(weight)
-                when {
-                    r == null || r < 1 -> error = "Число должно быть не меньше 1"
-                    weight.isNotBlank() && (w == null || w < 0) -> error = "Вес — число не меньше 0"
-                    else -> onSave(r, w, isWarmup)
+            Button(
+                colors = ButtonDefaults.buttonColors(containerColor = accent, contentColor = Color.Black),
+                onClick = {
+                    val r = reps.toIntOrNull()
+                    val w = if (weight.isBlank()) null else Fmt.parseWeight(weight)
+                    when {
+                        r == null || r < 1 -> error = "Число должно быть не меньше 1"
+                        weight.isNotBlank() && (w == null || w < 0) -> error = "Вес — число не меньше 0"
+                        else -> onSave(r, w, isWarmup)
+                    }
                 }
-            }) { Text("Сохранить", color = accent) }
+            ) { Text("Сохранить") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена", color = DenTrainPalette.MutedText) } }
     )

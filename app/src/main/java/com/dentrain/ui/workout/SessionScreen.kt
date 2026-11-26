@@ -1,7 +1,6 @@
 package com.dentrain.ui.workout
 
 import com.dentrain.util.userMessage
-import com.dentrain.ui.components.launchUserAction
 import com.dentrain.ui.components.OperationErrorDialog
 import com.dentrain.ui.components.CircularWorkoutProgress
 import com.dentrain.data.ExerciseWithSets
@@ -14,10 +13,16 @@ import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.selection.selectable
 import com.dentrain.ui.theme.DenTrainPalette
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.animateColor
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.updateTransition
+import androidx.compose.animation.togetherWith
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -82,7 +87,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -91,6 +95,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -112,7 +117,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import com.dentrain.data.ExerciseEntity
-import com.dentrain.data.RecordEntity
+import com.dentrain.data.RecordUpdate
+import com.dentrain.ui.components.launchUserAction
 import com.dentrain.data.SetResultEntity
 import com.dentrain.data.WorkoutRepository
 import com.dentrain.data.WorkoutWithExercises
@@ -120,7 +126,6 @@ import com.dentrain.timer.RestTimer
 import com.dentrain.timer.TimerState
 import com.dentrain.ui.components.BorderedBackButton
 import com.dentrain.ui.components.ConfirmDialog
-import com.dentrain.ui.components.ConfettiOverlay
 import com.dentrain.ui.components.ErrorText
 import com.dentrain.ui.components.RecordCelebrationDialog
 import com.dentrain.ui.components.SetEditDialog
@@ -131,32 +136,22 @@ import com.dentrain.util.completedWorkingSets
 import com.dentrain.util.Fmt
 import com.dentrain.util.Haptic
 import com.dentrain.util.doneSets
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-
-data class ExerciseGrowthItem(
-    val name: String,
-    val currentKg: Double,
-    val prevKg: Double,
-    val percent: Double
-)
-
-data class GrowthComparisonResult(
-    val dayOfWeekName: String,
-    val prevDateEpochDay: Long?,
-    val items: List<ExerciseGrowthItem>
-)
 
 class SessionViewModel(
     private val workoutId: Long,
     private val repo: WorkoutRepository,
     private val timer: RestTimer
 ) : ViewModel() {
+    internal var sessionRecordCelebration by mutableStateOf<RecordUpdate?>(null)
+    var finishAfterRecord = false
+    var savingSet by mutableStateOf(false)
+        private set
+    var finishing by mutableStateOf(false)
+        private set
     var operationError by mutableStateOf<String?>(null)
 
     private fun perform(fallback: String, action: suspend () -> Unit) {
@@ -165,16 +160,16 @@ class SessionViewModel(
 
     val workout: StateFlow<WorkoutWithExercises?> =
         repo.observeWorkout(workoutId).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
-    private val settings = repo.settings.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+    val settings = repo.settings.stateIn(viewModelScope, SharingStarted.Eagerly, null)
     val timerState: StateFlow<TimerState> = timer.state
 
-    fun saveSetAndCheckRecord(
+    internal fun saveSetAndCheckRecord(
         exercise: ExerciseEntity,
         repsText: String,
         weightText: String,
         isTimeBased: Boolean,
         isWarmup: Boolean = false,
-        onResult: (String?, RecordEntity?) -> Unit
+        onResult: (String?, RecordUpdate?) -> Unit
     ) {
         val reps = repsText.trim().toIntOrNull()
         if (reps == null || reps < 1) {
@@ -187,49 +182,18 @@ class SessionViewModel(
             return
         }
 
+        if (savingSet || finishing) return
+        savingSet = true
         perform("Не удалось записать подход.") {
-            val newRecord = repo.addSet(exercise.id, reps, weight, isTimeBased, isWarmup)
-            val s = settings.value
-            if (s != null && s.autoRestTimer) timer.restart(s.restSeconds)
-            onResult(null, newRecord)
-        }
-    }
-
-    /** Сравнение прогресса с последней тренировкой в ЭТОТ ЖЕ ДЕНЬ НЕДЕЛИ (например, среда -> среда). */
-    suspend fun getSameDayGrowthComparison(currentW: WorkoutWithExercises): GrowthComparisonResult = withContext(Dispatchers.Default) {
-        val currentDayOfWeek = currentW.workout.dayOfWeek
-
-        val prevW = repo.previousWorkout(currentDayOfWeek, currentW.workout.dateEpochDay)
-
-        if (prevW == null) {
-            return@withContext GrowthComparisonResult(
-                dayOfWeekName = Fmt.dayName(currentDayOfWeek),
-                prevDateEpochDay = null,
-                items = emptyList()
-            )
-        }
-
-        val items = mutableListOf<ExerciseGrowthItem>()
-        currentW.exercises.forEach { currentExItem ->
-            val exName = currentExItem.exercise.name
-            val currentKg = currentExItem.sets.filter { !it.isWarmup }.sumOf { (it.weight ?: 0.0) * it.reps }
-
-            val prevExItem = prevW.exercises.find { it.exercise.name.equals(exName, ignoreCase = true) }
-            val prevKg = prevExItem?.sets?.filter { !it.isWarmup }?.sumOf { (it.weight ?: 0.0) * it.reps } ?: 0.0
-
-            if (currentKg > 0 && prevKg > 0) {
-                val pct = ((currentKg - prevKg) / prevKg) * 100.0
-                items.add(ExerciseGrowthItem(exName, currentKg, prevKg, pct))
-            } else if (currentKg > 0 && prevKg == 0.0) {
-                items.add(ExerciseGrowthItem(exName, currentKg, 0.0, 100.0))
+            try {
+                val newRecord = repo.addSetWithRecord(exercise.id, reps, weight, isTimeBased, isWarmup)
+                val s = settings.value
+                if (s != null && s.autoRestTimer) timer.restart(s.restSeconds)
+                onResult(null, newRecord)
+            } finally {
+                savingSet = false
             }
         }
-
-        GrowthComparisonResult(
-            dayOfWeekName = Fmt.dayName(currentDayOfWeek),
-            prevDateEpochDay = prevW.workout.dateEpochDay,
-            items = items
-        )
     }
 
     fun updateSet(set: SetResultEntity, reps: Int, weight: Double?, isWarmup: Boolean = set.isWarmup) {
@@ -252,10 +216,16 @@ class SessionViewModel(
     }
 
     fun finish(onDone: () -> Unit) {
+        if (finishing) return
+        finishing = true
         perform("Не удалось завершить тренировку.") {
-            repo.finishWorkout(workoutId)
-            timer.reset()
-            onDone()
+            try {
+                repo.finishWorkout(workoutId)
+                timer.reset()
+                onDone()
+            } finally {
+                finishing = false
+            }
         }
     }
 }
@@ -313,17 +283,15 @@ private fun LiveDurationText(startedAt: Long) {
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-fun SessionScreen(workoutId: Long, onBack: () -> Unit, onFinished: () -> Unit) {
+internal fun SessionScreen(workoutId: Long, onBack: () -> Unit, onFinished: () -> Unit) {
     val vm = appViewModel(key = "session$workoutId") { SessionViewModel(workoutId, it.repository, it.restTimer) }
     OperationErrorDialog(vm.operationError) { vm.operationError = null }
     val workout by vm.workout.collectAsStateWithLifecycle()
-    val scope = rememberCoroutineScope()
+    val settings by vm.settings.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
     var showFinish by remember { mutableStateOf(false) }
-    var showGoalAccomplished by remember { mutableStateOf(false) }
-    var showGrowthComparison by remember { mutableStateOf<GrowthComparisonResult?>(null) }
-    var sessionRecordCelebration by remember { mutableStateOf<RecordEntity?>(null) }
+    val finish = { vm.finish(onFinished) }
     var editing by remember { mutableStateOf<SetResultEntity?>(null) }
     var showNotesDialog by remember { mutableStateOf(false) }
     var showQuickAddExercise by remember { mutableStateOf(false) }
@@ -356,9 +324,14 @@ fun SessionScreen(workoutId: Long, onBack: () -> Unit, onFinished: () -> Unit) {
                     ) {
                         workout?.workout?.startedAt?.let { LiveDurationText(it) }
 
-                        IconButton(onClick = {
+                        IconButton(enabled = !vm.savingSet && !vm.finishing, onClick = {
                             Haptic.click(context)
-                            showFinish = true
+                            val entries = workout?.exercises.orEmpty()
+                            if (entries.isNotEmpty() && entries.all { it.completedWorkingSets >= it.totalWorkingSets }) {
+                                finish()
+                            } else {
+                                showFinish = true
+                            }
                         }) {
                             Icon(Icons.Filled.Flag, "Завершить", tint = DenTrainPalette.Error)
                         }
@@ -375,6 +348,17 @@ fun SessionScreen(workoutId: Long, onBack: () -> Unit, onFinished: () -> Unit) {
             }
             return@Scaffold
         }
+        if (showFinish) {
+            ConfirmDialog(
+                title = "Завершить тренировку?",
+                text = "Выполнено подходов: ${w.doneSets()}. Тренировка будет сохранена в истории.",
+                confirmText = "Завершить",
+                destructive = false,
+                onConfirm = { showFinish = false; finish() },
+                onDismiss = { showFinish = false }
+            )
+        }
+
         val exercises = remember(w.exercises) { w.exercises.sortedBy { it.exercise.position } }
         val addExercise = {
             Haptic.click(context)
@@ -413,14 +397,6 @@ fun SessionScreen(workoutId: Long, onBack: () -> Unit, onFinished: () -> Unit) {
 
         val totalPlannedWorkingSets = remember(exercises) { exercises.sumOf { it.totalWorkingSets } }
         val completedWorkingSets = remember(exercises) { exercises.sumOf { it.completedWorkingSets } }
-        val workoutDone = totalPlannedWorkingSets > 0 && completedWorkingSets == totalPlannedWorkingSets
-
-        LaunchedEffect(workoutDone) {
-            if (workoutDone) {
-                Haptic.success(context)
-                showGoalAccomplished = true
-            }
-        }
 
         Box(Modifier.fillMaxSize()) {
             LazyColumn(
@@ -517,157 +493,222 @@ fun SessionScreen(workoutId: Long, onBack: () -> Unit, onFinished: () -> Unit) {
                 }
 
                 item {
-                    SessionCard {
-                        Row(Modifier.fillMaxWidth().selectableGroup()) {
-                            SessionSetTab("Рабочий", !isInputWarmup, DenTrainPalette.Lime) {
-                                Haptic.click(context)
-                                isInputWarmup = false
-                            }
-                            SessionSetTab("Разминка", isInputWarmup, WarmupAccent) {
-                                Haptic.click(context)
-                                isInputWarmup = true
-                            }
-                        }
-
-                        val visibleSets = if (isInputWarmup) warmupSets else workingSets
-                        val totalCount = if (isInputWarmup) warmupSets.size else maxOf(ex.plannedSets, workingDoneCount)
-                        if (totalCount > 0) Spacer(Modifier.height(8.dp))
-                        repeat(totalCount) { position ->
-                            SessionSetRow(
-                                result = visibleSets.getOrNull(position),
-                                isWarmup = isInputWarmup,
-                                isCurrent = position == visibleSets.size,
-                                onEdit = {
-                                    Haptic.click(context)
-                                    editing = it
-                                }
-                            )
-                        }
-                    }
-                }
-
-                // Форма ввода результата подхода
-                item {
-                    if (!allDone || isInputWarmup) {
-                        val lastResult = if (isInputWarmup) warmupSets.lastOrNull() else workingSets.lastOrNull()
-                        var reps by remember(ex.id, sets.size, isInputWarmup) {
-                            mutableStateOf(lastResult?.reps?.toString() ?: Regex("\\d+").find(ex.plannedReps ?: "")?.value ?: "")
-                        }
-                        var weight by remember(ex.id, sets.size, isInputWarmup) {
-                            mutableStateOf(Fmt.weight(if (lastResult == null) ex.plannedWeight else lastResult.weight) ?: "")
-                        }
-                        var error by remember(ex.id, sets.size, isInputWarmup) { mutableStateOf<String?>(null) }
-                        val accent = if (isInputWarmup) WarmupAccent else DenTrainPalette.Lime
-
+                    Column {
                         SessionCard {
-                            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                Row(
-                                    Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text(
-                                        text = if (isInputWarmup) "Результат разминки" else "Результат подхода",
-                                        modifier = Modifier.weight(1f).padding(end = 8.dp),
-                                        fontSize = 16.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = Color.White
-                                    )
+                            val tabTransition = updateTransition(isInputWarmup, label = "set type")
+                            val indicatorPosition by tabTransition.animateFloat(
+                                transitionSpec = { tween(SetTabAnimationMillis) },
+                                label = "set tab indicator position"
+                            ) { warmup -> if (warmup) 1f else 0f }
+                            val indicatorColor by tabTransition.animateColor(
+                                transitionSpec = { tween(SetTabAnimationMillis) },
+                                label = "set tab indicator color"
+                            ) { warmup -> if (warmup) WarmupAccent else DenTrainPalette.Lime }
 
-                                    // Переключатель Повт. / Сек.
-                                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                        Box(
-                                            modifier = Modifier
-                                                .clip(CircleShape)
-                                                .background(if (!isTimeBased) DenTrainPalette.RaisedPanel else DenTrainPalette.Panel)
-                                                .border(BorderStroke(1.dp, if (!isTimeBased) accent else DenTrainPalette.Border), CircleShape)
-                                                .clickable {
-                                                    Haptic.click(context)
-                                                    isTimeBased = false
-                                                }
-                                                .padding(horizontal = 8.dp, vertical = 4.dp)
-                                        ) {
-                                            Text("Повт.", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = if (!isTimeBased) Color.White else DenTrainPalette.MutedText)
-                                        }
+                            Row(Modifier.fillMaxWidth().selectableGroup()) {
+                                SessionSetTab("Рабочий", !isInputWarmup, Color.White) {
+                                    Haptic.click(context)
+                                    isInputWarmup = false
+                                }
+                                SessionSetTab("Разминка", isInputWarmup, WarmupAccent) {
+                                    Haptic.click(context)
+                                    isInputWarmup = true
+                                }
+                            }
+                            Canvas(Modifier.fillMaxWidth().height(2.dp)) {
+                                val tabWidth = size.width / 2f
+                                drawRect(DenTrainPalette.Border)
+                                drawRect(
+                                    color = indicatorColor,
+                                    topLeft = Offset(tabWidth * indicatorPosition, 0f),
+                                    size = Size(tabWidth, size.height)
+                                )
+                            }
 
-                                        Box(
-                                            modifier = Modifier
-                                                .clip(CircleShape)
-                                                .background(if (isTimeBased) DenTrainPalette.RaisedPanel else DenTrainPalette.Panel)
-                                                .border(BorderStroke(1.dp, if (isTimeBased) accent else DenTrainPalette.Border), CircleShape)
-                                                .clickable {
-                                                    Haptic.click(context)
-                                                    isTimeBased = true
-                                                }
-                                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                            tabTransition.AnimatedContent(
+                                modifier = Modifier.fillMaxWidth(),
+                                transitionSpec = {
+                                    (fadeIn(tween(240, delayMillis = 120)) togetherWith fadeOut(tween(180)))
+                                        .using(SizeTransform { _, _ -> tween(SetTabAnimationMillis) })
+                                }
+                            ) { warmup ->
+                                val visibleSets = if (warmup) warmupSets else workingSets
+                                val totalCount = if (warmup) {
+                                    val defaultSlots = if (ex.plannedSets == 2) 2 else 3
+                                    if (warmupSets.size < defaultSlots) warmupSets.size + 1 else warmupSets.size
+                                } else {
+                                    maxOf(ex.plannedSets, workingDoneCount)
+                                }
+                                val rowCount = updateTransition(totalCount, label = "set row count")
+                                Column(Modifier.fillMaxWidth()) {
+                                    Spacer(Modifier.height(8.dp))
+                                    repeat(maxOf(rowCount.currentState, rowCount.targetState)) { position ->
+                                        rowCount.AnimatedVisibility(
+                                            visible = { count -> position < count },
+                                            enter = expandVertically(tween(SetLayoutAnimationMillis), expandFrom = Alignment.Top) +
+                                                fadeIn(tween(SetLayoutAnimationMillis)),
+                                            exit = shrinkVertically(tween(SetLayoutAnimationMillis), shrinkTowards = Alignment.Top) +
+                                                fadeOut(tween(SetLayoutAnimationMillis))
                                         ) {
-                                            Text("⏱ Сек.", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = if (isTimeBased) Color.White else DenTrainPalette.MutedText)
+                                            SessionSetRow(
+                                                result = visibleSets.getOrNull(position),
+                                                swapWeightReps = settings?.swapWeightReps == true,
+                                                number = position + 1,
+                                                isWarmup = warmup,
+                                                isCurrent = position == visibleSets.size,
+                                                onEdit = {
+                                                    Haptic.click(context)
+                                                    editing = it
+                                                }
+                                            )
                                         }
                                     }
                                 }
+                            }
+                        }
+                        AnimatedVisibility(
+                            visible = !allDone || isInputWarmup,
+                            enter = expandVertically(tween(SetLayoutAnimationMillis), expandFrom = Alignment.Top) +
+                                fadeIn(tween(SetLayoutAnimationMillis)),
+                            exit = shrinkVertically(tween(SetLayoutAnimationMillis), shrinkTowards = Alignment.Top) +
+                                fadeOut(tween(SetLayoutAnimationMillis))
+                        ) {
+                            val lastResult = if (isInputWarmup) warmupSets.lastOrNull() else workingSets.lastOrNull()
+                            var reps by remember(ex.id, sets.size, isInputWarmup) {
+                                mutableStateOf(lastResult?.reps?.toString() ?: Regex("\\d+").find(ex.plannedReps ?: "")?.value ?: "")
+                            }
+                            var weight by remember(ex.id, sets.size, isInputWarmup) {
+                                mutableStateOf(Fmt.weight(if (lastResult == null) ex.plannedWeight else lastResult.weight) ?: "")
+                            }
+                            var error by remember(ex.id, sets.size, isInputWarmup) { mutableStateOf<String?>(null) }
+                            val accent = if (isInputWarmup) WarmupAccent else DenTrainPalette.Lime
 
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    OutlinedTextField(
-                                        value = reps,
-                                        onValueChange = { reps = it.filter(Char::isDigit).take(3) },
-                                        label = { Text(if (isTimeBased) "Секунды" else "Повторения") },
-                                        singleLine = true,
-                                        textStyle = LocalTextStyle.current.copy(fontSize = 18.sp, fontWeight = FontWeight.Bold),
-                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                        colors = sessionTfColors(isFilled = reps.isNotBlank(), hasError = error != null, accent = accent),
-                                        shape = RoundedCornerShape(12.dp),
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                    OutlinedTextField(
-                                        value = weight,
-                                        onValueChange = { weight = it.filter { c -> c.isDigit() || c == ',' || c == '.' }.take(7) },
-                                        label = { Text("Вес, кг") },
-                                        singleLine = true,
-                                        textStyle = LocalTextStyle.current.copy(fontSize = 18.sp, fontWeight = FontWeight.Bold),
-                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                                        colors = sessionTfColors(isFilled = weight.isNotBlank(), hasError = error != null, accent = accent),
-                                        shape = RoundedCornerShape(12.dp),
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                }
-
-                                if (error != null) {
-                                    ErrorText(error, Modifier.padding(top = 4.dp))
-                                }
-
-                                Button(
-                                    onClick = {
-                                        vm.saveSetAndCheckRecord(ex, reps, weight, isTimeBased, isInputWarmup) { err, record ->
-                                            if (err == null) {
-                                                if (record != null) {
-                                                    Haptic.success(context)
-                                                    sessionRecordCelebration = record
-                                                } else {
-                                                    Haptic.click(context)
-                                                }
-                                            }
-                                            error = err
-                                        }
-                                    },
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .heightIn(min = 48.dp),
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = accent,
-                                        contentColor = Color.Black
-                                    ),
-                                    shape = RoundedCornerShape(12.dp)
-                                ) {
+                            SessionCard(modifier = Modifier.padding(top = 16.dp)) {
+                                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                                     Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Icon(Icons.Filled.Check, contentDescription = null, tint = Color.Black, modifier = Modifier.size(18.dp))
                                         Text(
-                                            text = if (isInputWarmup) "Сохранить разминку" else "Сохранить подход",
+                                            text = if (isInputWarmup) "Результат разминки" else "Результат подхода",
+                                            modifier = Modifier.weight(1f).padding(end = 8.dp),
+                                            fontSize = 16.sp,
                                             fontWeight = FontWeight.Bold,
-                                            fontSize = 15.sp
+                                            color = Color.White
                                         )
+
+                                        // Переключатель Повт. / Сек.
+                                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .clip(CircleShape)
+                                                    .background(if (!isTimeBased) DenTrainPalette.RaisedPanel else DenTrainPalette.Panel)
+                                                    .border(BorderStroke(1.dp, if (!isTimeBased) accent else DenTrainPalette.Border), CircleShape)
+                                                    .clickable {
+                                                        Haptic.click(context)
+                                                        isTimeBased = false
+                                                    }
+                                                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                                            ) {
+                                                Text("Повт.", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = if (!isTimeBased) Color.White else DenTrainPalette.MutedText)
+                                            }
+
+                                            Box(
+                                                modifier = Modifier
+                                                    .clip(CircleShape)
+                                                    .background(if (isTimeBased) DenTrainPalette.RaisedPanel else DenTrainPalette.Panel)
+                                                    .border(BorderStroke(1.dp, if (isTimeBased) accent else DenTrainPalette.Border), CircleShape)
+                                                    .clickable {
+                                                        Haptic.click(context)
+                                                        isTimeBased = true
+                                                    }
+                                                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                                            ) {
+                                                Text("⏱ Сек.", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = if (isTimeBased) Color.White else DenTrainPalette.MutedText)
+                                            }
+                                        }
+                                    }
+
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        val repsField: @Composable () -> Unit = {
+                                            OutlinedTextField(
+                                                value = reps,
+                                                onValueChange = { reps = it.filter(Char::isDigit).take(3) },
+                                                label = { Text(if (isTimeBased) "Секунды" else "Повторения") },
+                                                singleLine = true,
+                                                textStyle = LocalTextStyle.current.copy(fontSize = 18.sp, fontWeight = FontWeight.Bold),
+                                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                                colors = sessionTfColors(isFilled = reps.isNotBlank(), hasError = error != null, accent = accent),
+                                                shape = RoundedCornerShape(12.dp),
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                        }
+                                        val weightField: @Composable () -> Unit = {
+                                            OutlinedTextField(
+                                                value = weight,
+                                                onValueChange = { weight = it.filter { c -> c.isDigit() || c == ',' || c == '.' }.take(7) },
+                                                label = { Text("Вес, кг") },
+                                                singleLine = true,
+                                                textStyle = LocalTextStyle.current.copy(fontSize = 18.sp, fontWeight = FontWeight.Bold),
+                                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                                colors = sessionTfColors(isFilled = weight.isNotBlank(), hasError = error != null, accent = accent),
+                                                shape = RoundedCornerShape(12.dp),
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                        }
+                                        if (settings?.swapWeightReps == true) {
+                                            weightField()
+                                            repsField()
+                                        } else {
+                                            repsField()
+                                            weightField()
+                                        }
+                                    }
+
+                                    if (error != null) {
+                                        ErrorText(error, Modifier.padding(top = 4.dp))
+                                    }
+
+                                    Button(
+                                        enabled = !vm.savingSet && !vm.finishing,
+                                        onClick = {
+                                            val completesPlan = !isInputWarmup && !allDone &&
+                                                completedWorkingSets + 1 == totalPlannedWorkingSets
+                                            vm.saveSetAndCheckRecord(ex, reps, weight, isTimeBased, isInputWarmup) { err, record ->
+                                                if (err == null) {
+                                                    if (record != null) {
+                                                        vm.finishAfterRecord = completesPlan
+                                                        Haptic.success(context)
+                                                        vm.sessionRecordCelebration = record
+                                                    } else {
+                                                        Haptic.click(context)
+                                                        if (completesPlan) finish()
+                                                    }
+                                                }
+                                                error = err
+                                            }
+                                        },
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .heightIn(min = 48.dp),
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = accent,
+                                            contentColor = Color.Black
+                                        ),
+                                        shape = RoundedCornerShape(12.dp)
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        ) {
+                                            Icon(Icons.Filled.Check, contentDescription = null, tint = Color.Black, modifier = Modifier.size(18.dp))
+                                            Text(
+                                                text = if (isInputWarmup) "Сохранить разминку" else "Сохранить подход",
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 15.sp
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -794,41 +835,20 @@ fun SessionScreen(workoutId: Long, onBack: () -> Unit, onFinished: () -> Unit) {
                 }
             }
 
-            ConfettiOverlay(visible = showGoalAccomplished)
         }
 
-        sessionRecordCelebration?.let { rec ->
+        vm.sessionRecordCelebration?.let { (record, previous) ->
             RecordCelebrationDialog(
-                exerciseName = rec.exerciseName,
-                weightText = Fmt.weight(rec.weight) ?: "",
-                repsText = rec.reps.toString(),
-                onDismiss = { sessionRecordCelebration = null }
-            )
-        }
-
-        if (showGoalAccomplished) {
-            GoalAccomplishedDialog(
-                onContinue = {
-                    showGoalAccomplished = false
-                    scope.launch {
-                        try {
-                            showGrowthComparison = vm.getSameDayGrowthComparison(w)
-                        } catch (failure: Exception) {
-                            vm.operationError = failure.userMessage("Не удалось сравнить результаты тренировок.")
-                        }
+                exerciseName = record.exerciseName,
+                weightText = Fmt.weight(record.weight).orEmpty(),
+                repsText = record.reps.toString(),
+                previous = previous,
+                onDismiss = {
+                    vm.sessionRecordCelebration = null
+                    if (vm.finishAfterRecord) {
+                        vm.finishAfterRecord = false
+                        finish()
                     }
-                },
-                onDismiss = { showGoalAccomplished = false }
-            )
-        }
-
-        showGrowthComparison?.let { comp ->
-            WorkoutProgressGrowthDialog(
-                comparison = comp,
-                onDismiss = { showGrowthComparison = null },
-                onFinish = {
-                    showGrowthComparison = null
-                    vm.finish(onFinished)
                 }
             )
         }
@@ -846,20 +866,10 @@ fun SessionScreen(workoutId: Long, onBack: () -> Unit, onFinished: () -> Unit) {
             )
         }
 
-        if (showFinish) {
-            ConfirmDialog(
-                title = "Завершить тренировку?",
-                text = "Выполнено подходов: ${w.doneSets()}. Тренировка будет сохранена в истории.",
-                confirmText = "Завершить",
-                destructive = false,
-                onConfirm = { showFinish = false; vm.finish(onFinished) },
-                onDismiss = { showFinish = false }
-            )
-        }
-
         editing?.let { set ->
             SetEditDialog(
                 set = set,
+                swapWeightReps = settings?.swapWeightReps == true,
                 onSave = { r, wt, isW -> vm.updateSet(set, r, wt, isW); editing = null },
                 onDelete = { vm.deleteSet(set); editing = null },
                 onDismiss = { editing = null }
@@ -1055,12 +1065,14 @@ private fun ActiveExerciseOutline(exerciseId: Long, hasNext: Boolean, modifier: 
 }
 
 private val WarmupAccent = Color(0xFF00B0FF)
+private const val SetTabAnimationMillis = 360
+private const val SetLayoutAnimationMillis = 320
 
 @Composable
 private fun RowScope.SessionSetTab(
     label: String,
     selected: Boolean,
-    accent: Color,
+    selectedColor: Color,
     onClick: () -> Unit
 ) {
     Column(
@@ -1074,15 +1086,7 @@ private fun RowScope.SessionSetTab(
             modifier = Modifier.padding(vertical = 12.dp),
             fontSize = 14.sp,
             fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-            color = when {
-                !selected -> DenTrainPalette.MutedText
-                accent == WarmupAccent -> accent
-                else -> Color.White
-            }
-        )
-        Box(
-            Modifier.fillMaxWidth().height(2.dp)
-                .background(if (selected) accent else DenTrainPalette.Border)
+            color = if (selected) selectedColor else DenTrainPalette.MutedText
         )
     }
 }
@@ -1090,17 +1094,27 @@ private fun RowScope.SessionSetTab(
 @Composable
 private fun SessionSetRow(
     result: SetResultEntity?,
+    swapWeightReps: Boolean,
+    number: Int,
     isWarmup: Boolean,
     isCurrent: Boolean,
     onEdit: (SetResultEntity) -> Unit
 ) {
+    val borderColor by animateColorAsState(
+        when {
+            !isCurrent -> DenTrainPalette.Border
+            isWarmup -> WarmupAccent
+            else -> DenTrainPalette.Lime
+        },
+        animationSpec = tween(260), label = "current set border"
+    )
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 3.dp)
             .clip(RoundedCornerShape(10.dp))
             .background(if (result != null) DenTrainPalette.RaisedPanel else DenTrainPalette.Panel)
-            .border(BorderStroke(1.dp, DenTrainPalette.Border), RoundedCornerShape(10.dp))
+            .border(BorderStroke(1.dp, borderColor), RoundedCornerShape(10.dp))
             .then(if (result != null) Modifier.clickable { onEdit(result) } else Modifier)
             .padding(horizontal = 12.dp, vertical = 8.dp)
             .alpha(if (result != null || isCurrent) 1f else 0.5f),
@@ -1122,8 +1136,14 @@ private fun SessionSetRow(
             modifier = Modifier.size(18.dp)
         )
         Text(
+            text = if (isWarmup) "Р$number" else "№ $number",
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold,
+            color = DenTrainPalette.MutedText
+        )
+        Text(
             text = when {
-                result != null -> Fmt.shortSetLine(result)
+                result != null -> Fmt.shortSetLine(result, swapWeightReps)
                 isCurrent -> "введите результат ниже"
                 else -> "ожидает выполнения"
             },
@@ -1235,7 +1255,7 @@ private fun QuickAddExerciseDialog(
 }
 
 @Composable
-private fun NotesEditDialog(
+internal fun NotesEditDialog(
     initialNotes: String,
     onSave: (String) -> Unit,
     onDismiss: () -> Unit
@@ -1327,249 +1347,5 @@ private fun NotesEditDialog(
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun GoalAccomplishedDialog(
-    onContinue: () -> Unit,
-    onDismiss: () -> Unit
-) {
-    val animProgress = remember { Animatable(0f) }
-
-    LaunchedEffect(Unit) {
-        animProgress.animateTo(
-            targetValue = 1f,
-            animationSpec = tween(durationMillis = 1300, easing = LinearEasing)
-        )
-    }
-
-    Dialog(onDismissRequest = onDismiss) {
-        Card(
-            shape = RoundedCornerShape(24.dp),
-            colors = CardDefaults.cardColors(containerColor = DenTrainPalette.Panel),
-            border = BorderStroke(1.dp, DenTrainPalette.SubtleBorder),
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp)
-        ) {
-            Column(
-                modifier = Modifier.padding(20.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                Text(
-                    "ЦЕЛЬ ВЫПОЛНЕНА! 🎯",
-                    fontSize = 22.sp,
-                    fontWeight = FontWeight.ExtraBold,
-                    color = DenTrainPalette.Lime,
-                    textAlign = TextAlign.Center
-                )
-
-                Box(Modifier.fillMaxWidth().height(140.dp), contentAlignment = Alignment.Center) {
-                    ArrowTargetAnimation(progress = animProgress.value)
-                }
-
-                Text(
-                    "Отличная работа! Все запланированные упражнения и подходы выполнены!",
-                    textAlign = TextAlign.Center,
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 14.sp,
-                    color = Color.White
-                )
-
-                Button(
-                    onClick = onContinue,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 48.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = DenTrainPalette.Lime,
-                        contentColor = Color.Black
-                    ),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Text("Посмотреть прогресс 📈", fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun WorkoutProgressGrowthDialog(
-    comparison: GrowthComparisonResult,
-    onDismiss: () -> Unit,
-    onFinish: () -> Unit
-) {
-    val scale = remember { Animatable(0.2f) }
-
-    LaunchedEffect(Unit) {
-        scale.animateTo(
-            targetValue = 1f,
-            animationSpec = spring(dampingRatio = 0.6f, stiffness = 300f)
-        )
-    }
-
-    Dialog(onDismissRequest = onDismiss) {
-        Card(
-            shape = RoundedCornerShape(24.dp),
-            colors = CardDefaults.cardColors(containerColor = DenTrainPalette.Panel),
-            border = BorderStroke(1.dp, DenTrainPalette.SubtleBorder),
-            modifier = Modifier
-                .fillMaxWidth(0.94f)
-                .scale(scale.value)
-                .padding(12.dp)
-        ) {
-            Column(
-                modifier = Modifier.padding(20.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(14.dp)
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(68.dp)
-                        .clip(CircleShape)
-                        .background(DenTrainPalette.RaisedPanel)
-                        .border(BorderStroke(1.dp, DenTrainPalette.Lime), CircleShape),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text("📈", fontSize = 36.sp)
-                }
-
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(
-                        "ВАШ РОСТ И ПРОГРЕСС! 📈",
-                        fontSize = 20.sp,
-                        fontWeight = FontWeight.Black,
-                        color = DenTrainPalette.Lime,
-                        textAlign = TextAlign.Center
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        if (comparison.prevDateEpochDay != null)
-                            "Сравнение с последней тренировкой (${comparison.dayOfWeekName}, ${Fmt.shortDate(comparison.prevDateEpochDay)})"
-                        else "Это ваша первая сохранённая тренировка в этот день недели (${comparison.dayOfWeekName})!",
-                        fontSize = 12.sp,
-                        textAlign = TextAlign.Center,
-                        color = DenTrainPalette.MutedText
-                    )
-                }
-
-                if (comparison.items.isNotEmpty()) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(DenTrainPalette.RaisedPanel)
-                            .border(BorderStroke(1.dp, DenTrainPalette.Border), RoundedCornerShape(14.dp))
-                            .padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        comparison.items.forEach { item ->
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Column(Modifier.weight(1f)) {
-                                    Text(item.name, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = Color.White)
-                                    Text(
-                                        "Объём: ${item.currentKg.toInt()} кг (был ${item.prevKg.toInt()} кг)",
-                                        fontSize = 11.sp,
-                                        color = DenTrainPalette.MutedText
-                                    )
-                                }
-                                val percentText = if (item.percent >= 0) "+%.1f%%".format(item.percent).replace('.', ',')
-                                else "%.1f%%".format(item.percent).replace('.', ',')
-
-                                val badgeColor = if (item.percent >= 0) DenTrainPalette.Lime else DenTrainPalette.Error
-
-                                Box(
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(badgeColor.copy(alpha = 0.15f))
-                                        .border(BorderStroke(1.dp, badgeColor), RoundedCornerShape(8.dp))
-                                        .padding(horizontal = 10.dp, vertical = 4.dp)
-                                ) {
-                                    Text(
-                                        percentText,
-                                        fontWeight = FontWeight.ExtraBold,
-                                        color = badgeColor,
-                                        fontSize = 13.sp
-                                    )
-                                }
-                            }
-                        }
-                    }
-                } else if (comparison.prevDateEpochDay != null) {
-                    Text(
-                        "Все упражнения выполнены точно по плану!",
-                        fontSize = 14.sp,
-                        color = DenTrainPalette.MutedText,
-                        textAlign = TextAlign.Center
-                    )
-                }
-
-                Button(
-                    onClick = onFinish,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 48.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = DenTrainPalette.Lime,
-                        contentColor = Color.Black
-                    ),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Text("Сохранить и к итогам 🏆", fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun ArrowTargetAnimation(progress: Float) {
-    Canvas(Modifier.fillMaxSize()) {
-        val w = size.width
-        val h = size.height
-        val centerY = h / 2
-
-        val targetX = w * 0.82f
-        val targetRadius = 32.dp.toPx()
-
-        drawCircle(color = DenTrainPalette.Error, radius = targetRadius, center = Offset(targetX, centerY))
-        drawCircle(color = Color.White, radius = targetRadius * 0.65f, center = Offset(targetX, centerY))
-        drawCircle(color = DenTrainPalette.Error, radius = targetRadius * 0.35f, center = Offset(targetX, centerY))
-
-        val arrowStartX = 20.dp.toPx()
-        val currentArrowX = arrowStartX + (targetX - arrowStartX) * progress
-
-        val path = Path().apply {
-            moveTo(arrowStartX, centerY)
-            lineTo(currentArrowX, centerY)
-        }
-        drawPath(
-            path = path,
-            color = DenTrainPalette.Lime,
-            style = Stroke(width = 4.dp.toPx(), cap = StrokeCap.Round)
-        )
-
-        drawCircle(
-            color = DenTrainPalette.Lime,
-            radius = 6.dp.toPx(),
-            center = Offset(currentArrowX, centerY)
-        )
     }
 }

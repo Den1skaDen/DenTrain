@@ -43,9 +43,9 @@ object Fmt {
     }
 
     /** Компактное представление подхода: «12 х 60 кг» или «15 сек х 20 кг» или «12» */
-    fun shortSetLine(s: SetResultEntity): String {
+    fun shortSetLine(s: SetResultEntity, swapWeightReps: Boolean = false): String {
         val countStr = if (s.isTimeBased) "${s.reps} сек" else "${s.reps}"
-        return weight(s.weight)?.let { "$countStr х $it кг" } ?: countStr
+        return weight(s.weight)?.let { if (swapWeightReps) "$it кг х $countStr" else "$countStr х $it кг" } ?: countStr
     }
 
     /** mm:ss, остаток округляется вверх, чтобы «00:00» показывалось только в самом конце. */
